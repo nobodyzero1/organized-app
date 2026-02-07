@@ -8,6 +8,196 @@ import { schedulesState } from '@states/schedules';
 import { sourcesState } from '@states/sources';
 import { ApplyMinistryType } from '@definition/sources';
 import { AssignmentCongregation, SchedWeekType } from '@definition/schedules';
+import { AssignmentCode } from '@definition/assignment';
+
+const ASSIGNMENT_PATHS_SECTIONS = {
+  MM_CHAIRMAN: {
+    MM_Chairman_A: {
+      path: 'midweek_meeting.chairman.main_hall',
+      config: { code: AssignmentCode.MM_Chairman },
+    },
+    MM_Chairman_B: {
+      path: 'midweek_meeting.chairman.aux_class_1',
+      config: { code: AssignmentCode.MM_AuxiliaryCounselor },
+    },
+  },
+  MM_PRAYER: {
+    MM_OpeningPrayer: {
+      path: 'midweek_meeting.opening_prayer',
+      config: { code: AssignmentCode.MM_Prayer },
+    },
+    MM_ClosingPrayer: {
+      path: 'midweek_meeting.closing_prayer',
+      config: { code: AssignmentCode.MM_Prayer },
+    },
+  },
+  MM_TGW: {
+    MM_TGWTalk: {
+      path: 'midweek_meeting.tgw_talk',
+      config: { code: AssignmentCode.MM_TGWTalk },
+    },
+    MM_TGWGems: {
+      path: 'midweek_meeting.tgw_gems',
+      config: { code: AssignmentCode.MM_TGWGems },
+    },
+    MM_TGWBibleReading_A: {
+      path: 'midweek_meeting.tgw_bible_reading.main_hall',
+      config: { code: AssignmentCode.MM_BibleReading },
+    },
+    MM_TGWBibleReading_B: {
+      path: 'midweek_meeting.tgw_bible_reading.aux_class_1',
+      config: { code: AssignmentCode.MM_BibleReading },
+    },
+  },
+  MM_AYF_PART: {
+    MM_AYFPart1_Student_A: {
+      path: 'midweek_meeting.ayf_part1.main_hall.student',
+      config: {},
+    },
+    MM_AYFPart1_Assistant_A: {
+      path: 'midweek_meeting.ayf_part1.main_hall.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+    MM_AYFPart1_Student_B: {
+      path: 'midweek_meeting.ayf_part1.aux_class_1.student',
+      config: {},
+    },
+    MM_AYFPart1_Assistant_B: {
+      path: 'midweek_meeting.ayf_part1.aux_class_1.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+
+    MM_AYFPart2_Student_A: {
+      path: 'midweek_meeting.ayf_part2.main_hall.student',
+      config: {},
+    },
+    MM_AYFPart2_Assistant_A: {
+      path: 'midweek_meeting.ayf_part2.main_hall.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+    MM_AYFPart2_Student_B: {
+      path: 'midweek_meeting.ayf_part2.aux_class_1.student',
+      config: {},
+    },
+    MM_AYFPart2_Assistant_B: {
+      path: 'midweek_meeting.ayf_part2.aux_class_1.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+
+    MM_AYFPart3_Student_A: {
+      path: 'midweek_meeting.ayf_part3.main_hall.student',
+      config: {},
+    },
+    MM_AYFPart3_Assistant_A: {
+      path: 'midweek_meeting.ayf_part3.main_hall.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+    MM_AYFPart3_Student_B: {
+      path: 'midweek_meeting.ayf_part3.aux_class_1.student',
+      config: {},
+    },
+    MM_AYFPart3_Assistant_B: {
+      path: 'midweek_meeting.ayf_part3.aux_class_1.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+
+    MM_AYFPart4_Student_A: {
+      path: 'midweek_meeting.ayf_part4.main_hall.student',
+      config: {},
+    },
+    MM_AYFPart4_Assistant_A: {
+      path: 'midweek_meeting.ayf_part4.main_hall.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+    MM_AYFPart4_Student_B: {
+      path: 'midweek_meeting.ayf_part4.aux_class_1.student',
+      config: {},
+    },
+    MM_AYFPart4_Assistant_B: {
+      path: 'midweek_meeting.ayf_part4.aux_class_1.assistant',
+      config: { code: AssignmentCode.MM_AssistantOnly },
+    },
+  },
+  MM_LC: {
+    MM_LCPart1: {
+      path: 'midweek_meeting.lc_part1',
+      config: { code: AssignmentCode.MM_LCPart },
+    },
+    MM_LCPart2: {
+      path: 'midweek_meeting.lc_part2',
+      config: { code: AssignmentCode.MM_LCPart },
+    },
+    MM_LCPart3: {
+      path: 'midweek_meeting.lc_part3',
+      config: { code: AssignmentCode.MM_LCPart },
+    },
+  },
+  MM_CBS: {
+    MM_LCCBSConductor: {
+      path: 'midweek_meeting.lc_cbs.conductor',
+      config: { code: AssignmentCode.MM_CBSConductor },
+    },
+    MM_LCCBSReader: {
+      path: 'midweek_meeting.lc_cbs.reader',
+      config: { code: AssignmentCode.MM_CBSReader },
+    },
+  },
+  CO: {
+    MM_CircuitOverseer: {
+      path: 'midweek_meeting.circuit_overseer',
+      config: {},
+    },
+    WM_CircuitOverseer: {
+      path: 'weekend_meeting.circuit_overseer',
+      config: {},
+    },
+  },
+  WM_OPENING: {
+    WM_Chairman: {
+      path: 'weekend_meeting.chairman',
+      config: { code: AssignmentCode.WM_Chairman },
+    },
+  },
+  WM_TALK: {
+    WM_Speaker_Part1: {
+      path: 'weekend_meeting.speaker.part_1',
+      config: { code: AssignmentCode.WM_Speaker },
+    },
+    WM_Speaker_Part2: {
+      path: 'weekend_meeting.speaker.part_2',
+      config: { code: AssignmentCode.WM_Speaker },
+    },
+    WM_SubstituteSpeaker: {
+      path: 'weekend_meeting.speaker.substitute',
+      config: { code: AssignmentCode.WM_Speaker },
+    },
+    WM_Speaker_Outgoing: {
+      path: 'weekend_meeting.outgoing_talks',
+      config: { code: AssignmentCode.WM_Speaker },
+    },
+  },
+  WM_WT_STUDY: {
+    WM_WTStudy_Conductor: {
+      path: 'weekend_meeting.wt_study.conductor',
+      config: { code: AssignmentCode.WM_WTStudyConductor },
+    },
+    WM_WTStudy_Reader: {
+      path: 'weekend_meeting.wt_study.reader',
+      config: { code: AssignmentCode.WM_WTStudyReader },
+    },
+  },
+  WM_PRAYER: {
+    WM_ClosingPrayer: {
+      path: 'weekend_meeting.closing_prayer',
+      config: { code: AssignmentCode.WM_Prayer },
+    },
+    WM_OpeningPrayer: {
+      path: 'weekend_meeting.opening_prayer',
+      config: { code: AssignmentCode.WM_Prayer },
+    },
+  },
+} as const;
+export const ASSIGNMENT_DEFAULTS = extractConfigs(ASSIGNMENT_PATHS_SECTIONS);
 
 export function getPropertyByPath<T = unknown>(
   obj: unknown,
