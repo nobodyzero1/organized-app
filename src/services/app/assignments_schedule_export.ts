@@ -197,6 +197,25 @@ const ASSIGNMENT_PATHS_SECTIONS = {
     },
   },
 } as const;
+
+export type AssignmentConfigType = {
+  code?: AssignmentCode;
+  elderOnly?: boolean;
+};
+
+const extractConfigs = <
+  T extends Record<string, Record<string, { config: AssignmentConfigType }>>,
+>(
+  sections: T
+) => {
+  const result: Record<string, AssignmentConfigType> = {};
+  Object.values(sections).forEach((section) => {
+    Object.entries(section).forEach(([key, value]) => {
+      result[key] = value.config;
+    });
+  });
+  return result;
+};
 export const ASSIGNMENT_DEFAULTS = extractConfigs(ASSIGNMENT_PATHS_SECTIONS);
 
 export function getPropertyByPath<T = unknown>(

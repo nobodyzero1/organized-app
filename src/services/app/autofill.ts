@@ -50,6 +50,7 @@ import {
 } from './sources';
 import { sourcesState } from '@states/sources';
 import { personsState } from '@states/persons';
+import { handleDownloadDebugCSV } from './assignments_schedule_export';
 
 const handleGetWeekType = (schedule: SchedWeekType) => {
   const dataView = store.get(userDataViewState);
@@ -1124,6 +1125,8 @@ export const schedulesStartAutofill = async (
     if (meeting === 'weekend') {
       await handleAutofillWeekend(weeksList);
     }
+
+    handleDownloadDebugCSV();
   } catch (error) {
     throw new Error(`autofill error: ${error.message}`);
   }
