@@ -61,6 +61,10 @@ import { AssignmentStatisticsComplete } from './assignments_with_stats';
 import { personsAssignmentMetrics } from './assignments_with_stats';
 import { schedulesGetData } from './schedules';
 import { STUDENT_TASK_CODES } from '@constants/assignmentConflicts';
+import {
+  handleDownloadAnalysisCSV,
+  handleDownloadDebugCSV,
+} from '@services/app/assignments_schedule_export';
 
 export type AssignmentTask = {
   schedule: SchedWeekType;
@@ -1746,4 +1750,6 @@ export const schedulesStartAutofill = async (
       `autofill error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
+  handleDownloadDebugCSV();
+  handleDownloadAnalysisCSV();
 };
