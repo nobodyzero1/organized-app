@@ -38,10 +38,12 @@ import {
   sortCandidatesMultiLevel,
 } from './assignment_selection';
 import {
+  AssignmentStatisticsComplete,
   DataViewKey,
   getAssignmentsWithStats,
   getEligiblePersonsPerDataViewAndCode,
   getPersonsAssignmentMetrics,
+  personsAssignmentMetrics,
   getDataViewsWithMeetings,
   getPersonsWeightingMetrics,
   personsWeightingMetrics,
@@ -50,6 +52,7 @@ import { isPersonBlockedOnDate, personIsElder } from './persons';
 import {
   schedulesAutofillSaveAssignment,
   schedulesBuildHistoryList,
+  schedulesGetData,
 } from './schedules';
 import {
   sourcesCheckAYFExplainBeliefsAssignment,
@@ -57,10 +60,8 @@ import {
   sourcesCheckLCElderAssignment,
 } from './sources';
 import { subMonths, format } from 'date-fns';
-import { AssignmentStatisticsComplete } from './assignments_with_stats';
-import { personsAssignmentMetrics } from './assignments_with_stats';
-import { schedulesGetData } from './schedules';
 import { STUDENT_TASK_CODES } from '@constants/assignmentConflicts';
+import { ApplyMinistryType } from '@definition/sources';
 import {
   handleDownloadAnalysisCSV,
   handleDownloadDebugCSV,
@@ -73,6 +74,7 @@ export type AssignmentTask = {
   assignmentKey: string;
   code: AssignmentCode;
   elderOnly: boolean;
+  requiresAssistant: boolean;
   sortIndex: number;
   dataView: string;
 };
@@ -264,8 +266,7 @@ export const processAssignmentSettings = (
       const fixedAssignmentsForView = fixedAssignments[viewKey] || {};
       const linkedAssignmentsForView = linkedAssignments[viewKey] || {};
 
-      keysToIgnore.push('WM_SubstituteSpeaker');
-      keysToIgnore.push('WM_Speaker_Outgoing');
+      keysToIgnore.push('WM_SubstituteSpeaker', 'WM_Speaker_Outgoing');
 
       if (meeting.w_study_conductor_default.value) {
         fixedAssignmentsForView['WM_WTStudy_Conductor'] =
@@ -417,7 +418,9 @@ const getCodeAndElderOnlyAssistant = (
 
   // 2. Get data from source
   // We need the type and source text (for talk check)
-  const ayfSourceData = source.midweek_meeting[`ayf_part${partIndex}`];
+  const ayfSourceData = source.midweek_meeting[
+    `ayf_part${partIndex}` as keyof typeof source.midweek_meeting
+  ] as ApplyMinistryType;
 
   if (!ayfSourceData) return undefined;
 
@@ -464,7 +467,7 @@ const getCodeAndElderOnlyAssistant = (
  * @param sourceLocale - The locale used for text analysis.
  * @returns An object `{ code, elderOnly }` if a valid assignment exists, or `undefined` if the part requires no assignment (e.g., a video).
  */
-const getCodeAndElderOnlyLCPart = (
+export const getCodeAndElderOnlyLCPart = (
   key: AssignmentPathKey,
   source: SourceWeekType,
   dataView: DataViewKey,
@@ -486,9 +489,9 @@ const getCodeAndElderOnlyLCPart = (
   } else {
     const partIndex = key.slice(-1);
     const propName = `lc_part${partIndex}`;
-    const lcPart = source.midweek_meeting[propName] as
-      | LivingAsChristiansType
-      | undefined;
+    const lcPart = source.midweek_meeting[
+      propName as keyof typeof source.midweek_meeting
+    ] as LivingAsChristiansType | undefined;
     if (!lcPart) return undefined;
 
     const titleOverride =
@@ -536,7 +539,7 @@ const getCodeAndElderOnlyLCPart = (
  * @param sourceLocale - The locale used for text analysis.
  * @returns An object `{ code, elderOnly }`, or `undefined` if the key is invalid or requires no assignment (e.g. LC video).
  */
-const getCodeAndElderOnly = (
+export const getCodeAndElderOnly = (
   key: AssignmentPathKey,
   source: SourceWeekType,
   dataView: string,
@@ -565,7 +568,9 @@ const getCodeAndElderOnly = (
   // Case 2: Student tasks (AYF Parts - Speaker/Student); source must be evaluated additionally here
   else if (key.includes('AYFPart')) {
     const partIndex = key.split('AYFPart')[1].charAt(0);
-    const ayfPart = source.midweek_meeting[`ayf_part${partIndex}`];
+    const ayfPart = source.midweek_meeting[
+      `ayf_part${partIndex}` as keyof typeof source.midweek_meeting
+    ] as ApplyMinistryType;
     if (!ayfPart) return undefined;
     code = ayfPart.type[lang];
     if (code === AssignmentCode.MM_Discussion && key.includes('_B'))
@@ -776,6 +781,22 @@ export const getTasksArray = (
           meeting_type
         );
 
+        let requiresAssistant = false;
+
+        if (key.includes('_Student_')) {
+          const assistantKey = key.replace(
+            '_Student_',
+            '_Assistant_'
+          ) as AssignmentPathKey;
+
+          requiresAssistant = !!getCodeAndElderOnlyAssistant(
+            assistantKey,
+            source,
+            lang,
+            sourceLocale
+          );
+        }
+
         // 1. Create the task object with a temporary sortIndex placeholder
         const task: AssignmentTask = {
           schedule: schedule,
@@ -784,6 +805,7 @@ export const getTasksArray = (
           assignmentKey: key,
           code,
           elderOnly,
+          requiresAssistant,
           sortIndex: 99999,
           dataView,
         };
@@ -814,7 +836,7 @@ export const getTasksArray = (
           }
         }
         // B) For Speaker Part 2, derive scarcity from Speaker Part 1
-        else if (key.includes('Part2')) {
+        else if (key === 'WM_Speaker_Part2') {
           const speaker1Key = key.replace(
             'Part2',
             'Part1'
@@ -892,7 +914,7 @@ export const getSortedTasks = (
   const getBaseKey = (t: AssignmentTask) => {
     let base = t.assignmentKey;
     if (base.includes('Assistant')) base = base.replace('Assistant', 'Student');
-    if (base === 'WMSpeakerPart2') base = 'WMSpeakerPart1';
+    if (base === 'WM_Speaker_Part2') base = 'WM_Speaker_Part1';
     return `${t.schedule.weekOf}-${t.dataView}-${base}`;
   };
 
@@ -945,10 +967,10 @@ export const getSortedTasks = (
     // 5. Tertiary sort within the same task family
     const isSubPartA =
       a.assignmentKey.includes('Assistant') ||
-      a.assignmentKey === 'WMSpeakerPart2';
+      a.assignmentKey === 'WM_Speaker_Part2';
     const isSubPartB =
       b.assignmentKey.includes('Assistant') ||
-      b.assignmentKey === 'WMSpeakerPart2';
+      b.assignmentKey === 'WM_Speaker_Part2';
 
     if (isSubPartA !== isSubPartB) {
       return isSubPartA ? 1 : -1; // Keep dependent sub-parts after the main part
@@ -1031,7 +1053,7 @@ const isCandidateValid = (
   cleanHistory: AssignmentHistoryType[]
 ): boolean => {
   // 1. Basic eligibility (Is the person generally allowed to perform this task?)
-  if (!allowedUIDs || !allowedUIDs.has(person.person_uid)) return false;
+  if (!allowedUIDs?.has(person.person_uid)) return false;
 
   // 2. Elder check
   if (task.elderOnly && !personIsElder(person)) return false;
@@ -1164,12 +1186,13 @@ const filterCandidates = (
     STUDENT_ASSIGNMENT.includes(task.code);
 
   let availableAssistants: PersonType[] = [];
-  if (isStudentTask) {
+  if (isStudentTask && task.requiresAssistant) {
     const mockAssistantTask: AssignmentTask = {
       ...task,
       assignmentKey: task.assignmentKey.replace('_Student_', '_Assistant_'),
       code: AssignmentCode.MM_AssistantOnly,
       elderOnly: false,
+      requiresAssistant: false,
     };
 
     availableAssistants = persons.filter((potentialAssistant) => {
@@ -1197,7 +1220,7 @@ const filterCandidates = (
 
     if (!valid) return false;
 
-    if (isStudentTask) {
+    if (isStudentTask && task.requiresAssistant) {
       const hasValidAssistant = availableAssistants.some((assistant) => {
         return (
           assistant.person_uid !== p.person_uid &&
@@ -1215,25 +1238,28 @@ const filterCandidates = (
 };
 
 /**
- * Converts **all** Symposium Speakers (`WM_SpeakerSymposium`) to standard Speakers (`WM_Speaker`)
- * in person assignment preferences **across the entire congregation**.
+ * Converts symposium speaker permissions (`WM_SpeakerSymposium`) to standard
+ * speaker permissions (`WM_Speaker`) for persons who are symposium speakers in
+ * the active data view.
  *
- * It permanently updates `person.person_data.assignments[dataView].values` by:
+ * The function first checks the assignment entry for the provided `dataView`
+ * and records the UID of each person who has `WM_SpeakerSymposium` there.
+ * For those persons, it then normalizes `person.person_data.assignments`
+ * across all views by replacing `WM_SpeakerSymposium` with `WM_Speaker`
+ * and removing duplicates in each assignment entry.
  *
- * 1. **Scanning** all persons in the given `dataView`
- * 2. **Finding** those with `WM_SpeakerSymposium` (code 121) in their allowed tasks
- * 3. **Replacing** `WM_SpeakerSymposium → WM_Speaker` (code 120)
- * 4. **Removing** duplicates after replacement
- * 5. **Returning** UIDs of **all affected persons** (for logging/audit)
+ * Purpose:
+ * - Keeps `symposiumSpeakerUIDs` limited to the active view for later
+ *   `WM_Speaker_Part2` handling.
+ * - Normalizes cloned assignment values across all views so cross-view
+ *   weighting and scoring use consistent speaker codes.
  *
- * **Purpose:** To the most part handling is easier this way.
- * Both speaker types qualify for `WM_Speaker_Part1`.
+ * Side effect:
+ * - Mutates `person.person_data.assignments` in place.
  *
- * **Side Effect:** **Mutates** `person.person_data.assignments` in-place!
- *
- * @param persons - Full congregation person list (will be mutated)
- * @param dataView - Target data view (e.g., `'main'`, `'lg_de'`)
- * @returns Set of UIDs whose preferences were modified
+ * @param persons - Full congregation person list; matching assignment entries are mutated.
+ * @param dataView - Active data view used to detect which persons are symposium speakers.
+ * @returns Set of person UIDs that had `WM_SpeakerSymposium` in the active data view.
  */
 export const changeSymposiumToNormalSpeaker = (
   persons: PersonType[],
@@ -1242,30 +1268,29 @@ export const changeSymposiumToNormalSpeaker = (
   const symposiumSpeakerUIDs = new Set<string>();
 
   persons.forEach((person) => {
-    const assignmentEntry = person.person_data.assignments.find(
+    const activeViewEntry = person.person_data.assignments.find(
       (entry) => entry.type === dataView
     );
 
-    if (assignmentEntry) {
-      const hasSymposium = assignmentEntry.values.includes(
-        AssignmentCode.WM_SpeakerSymposium
+    const hasSymposiumInActiveView =
+      activeViewEntry?.values.includes(AssignmentCode.WM_SpeakerSymposium) ??
+      false;
+
+    if (!hasSymposiumInActiveView) return;
+
+    symposiumSpeakerUIDs.add(person.person_uid);
+
+    person.person_data.assignments.forEach((assignmentEntry) => {
+      assignmentEntry.values = assignmentEntry.values.map((code) =>
+        code === AssignmentCode.WM_SpeakerSymposium
+          ? AssignmentCode.WM_Speaker
+          : code
       );
 
-      if (hasSymposium) {
-        symposiumSpeakerUIDs.add(person.person_uid);
-
-        // 2. Replace code 121 (symposium speaker) with 120 (regular speaker)
-        assignmentEntry.values = assignmentEntry.values.map((code) =>
-          code === AssignmentCode.WM_SpeakerSymposium
-            ? AssignmentCode.WM_Speaker
-            : code
-        );
-
-        // Remove duplicates after the replacement
-        assignmentEntry.values = Array.from(new Set(assignmentEntry.values));
-      }
-    }
+      assignmentEntry.values = Array.from(new Set(assignmentEntry.values));
+    });
   });
+
   return symposiumSpeakerUIDs;
 };
 
@@ -1430,7 +1455,8 @@ export const handleDynamicAssignmentAutofill = (
   );
 
   const eligibilityMapView =
-    getEligiblePersonsPerDataViewAndCode(persons).get(dataView);
+    getEligiblePersonsPerDataViewAndCode(persons).get(dataView) ??
+    new Map<AssignmentCode, Set<string>>();
 
   // Collection array for all tasks to be planned in the given schedule weeks
 
@@ -1476,7 +1502,10 @@ export const handleDynamicAssignmentAutofill = (
 
     const newCandidatesPool: PersonType[] = [];
     targetTaskCounts.forEach((value, key) => {
-      newCandidatesPool.push(persons.find((p) => p.person_uid === key));
+      const person = persons.find((p) => p.person_uid === key);
+      if (person) {
+        newCandidatesPool.push(person);
+      }
     });
 
     // 2. Cleanup and preparation for round 2
@@ -1486,7 +1515,13 @@ export const handleDynamicAssignmentAutofill = (
 
     deleteTasksFromHistory(weekTasks, fullHistory);
 
-    adjustTasksSortIndex(weekTasks, newCandidatesPool, eligibilityMapView);
+    adjustTasksSortIndex(
+      weekTasks,
+      newCandidatesPool,
+      fullHistory,
+      eligibilityMapView,
+      checkAssignmentsSettingsResult
+    );
 
     // Second round for optimizing tasks distribution
     processingTasks(
@@ -1571,13 +1606,20 @@ export const deleteTasksFromHistory = (
 export const adjustTasksSortIndex = (
   tasks: AssignmentTask[],
   persons: PersonType[],
-  eligibilityMapView: Map<AssignmentCode, Set<string>>
+  fullHistory: AssignmentHistoryType[],
+  eligibilityMapView: Map<AssignmentCode, Set<string>>,
+  checkAssignmentsSettingsResult: AssignmentSettingsResult
 ) => {
   tasks.forEach((element) => {
-    const eligiblePersons = persons.filter((person) =>
-      eligibilityMapView.get(element.code).has(person.person_uid)
+    const filteredCandidates = filterCandidates(
+      persons,
+      element,
+      fullHistory,
+      eligibilityMapView,
+      checkAssignmentsSettingsResult
     );
-    element.sortIndex = eligiblePersons.length;
+
+    element.sortIndex = filteredCandidates.length;
   });
 };
 

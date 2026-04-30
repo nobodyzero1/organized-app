@@ -1283,6 +1283,7 @@ export const schedulesRandomChooseTalks = async (
 
 export const dbSchedulesAutoFill = async () => {
   const groups = store.get(languageGroupsState);
+  if (!groups.length) return;
   const startWeek = getWeekDate();
   const endWeek = addMonths(startWeek, 3);
 
@@ -1299,7 +1300,6 @@ export const dbSchedulesAutoFill = async () => {
     },
   });
 
-  const schedules = structuredClone(store.get(schedulesState));
   await schedulesStartAutofill(start, end, 'weekend', groups);
 
   // assign only midweek once in a 3 months
@@ -1323,22 +1323,34 @@ export const dbSchedulesAutoFill = async () => {
 
     result.push(weekDate);
   }
-
+  const schedules = structuredClone(store.get(schedulesState));
   const relevantSchedules = schedules.filter(
     (record) => record.weekOf >= start && record.weekOf <= end
   );
 
   relevantSchedules.forEach((schedule) => {
     if (!result.includes(schedule.weekOf)) {
-      schedule.midweek_meeting.week_type.push({
-        type: group.group_id,
-        value: Week.NO_MEETING,
-        updatedAt: new Date().toISOString(),
-      });
+      const updatedAt = new Date().toISOString();
+
+      const existing = schedule.midweek_meeting.week_type.find(
+        (entry) => entry.type === group.group_id
+      );
+
+      if (existing) {
+        existing.value = Week.NO_MEETING;
+        existing.updatedAt = updatedAt;
+      } else {
+        schedule.midweek_meeting.week_type.push({
+          type: group.group_id,
+          value: Week.NO_MEETING,
+          updatedAt,
+        });
+      }
     }
   });
 
   await dbSchedBulkUpdate(relevantSchedules);
+  store.set(schedulesState, schedules);
 
   const newFullHistory = schedulesBuildHistoryList();
   store.set(assignmentsHistoryState, newFullHistory);

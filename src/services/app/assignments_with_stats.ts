@@ -2,6 +2,7 @@
 import {
   STUDENT_ASSIGNMENT,
   WEEK_TYPE_ASSIGNMENT_CODES,
+  VARIABLE_MM_KEYS,
 } from '@constants/index';
 import { SchedWeekType } from '@definition/schedules';
 import { PersonType } from '@definition/person';
@@ -10,13 +11,11 @@ import {
   MM_ASSIGNMENT_CODES,
   WM_ASSIGNMENT_CODES,
 } from '@definition/assignment';
-import { STUDENT_TASK_CODES } from '@constants/assignmentConflicts';
 import { SettingsType } from '@definition/settings';
 import { SourceWeekType } from '@definition/sources';
 import { Week } from '@definition/week_type';
 import { FieldServiceGroupType } from '@definition/field_service_groups';
-import { FixedAssignmentsByCode } from './autofill';
-import { sourcesCheckAYFExplainBeliefsAssignment } from './sources';
+import { FixedAssignmentsByCode, getCodeAndElderOnly } from './autofill';
 import { ASSIGNMENT_CONFLICTS } from '@constants/assignmentConflicts';
 
 /**
@@ -178,14 +177,31 @@ const getWeekStatsInclusion = (
 };
 
 /**
- * Counts the occurrences of variable midweek meeting parts ...
+ * Counts all variable midweek assignment occurrences from the source weeks
+ * by reusing the same source-to-task resolution logic as the autofill pipeline.
  *
- * @param sources - Array of source weeks to analyze.
- * @param settings - Global congregation settings (e.g., class count for the view).
- * @param langKey - Language key used to resolve assignment codes/titles (e.g., 'x' or 'e').
- * @param view - Data view used for class count and Local Needs title resolution.
- * @param sourceLocale - Locale of the source material (used for parsing/heuristics).
- * @returns Map linking each AssignmentCode to its accumulated count.
+ * This function iterates over all variable midweek assignment keys
+ * (`VARIABLE_MM_KEYS`) for each source week and resolves the effective
+ * `AssignmentCode` via `getCodeAndElderOnly()`.
+ *
+ * Key logic:
+ * - Respects the configured class count for the current data view and skips
+ *   auxiliary (`_B`) school slots when only one class is active.
+ * - Counts only assignments that actually resolve to a valid task code.
+ * - Keeps AYF counting aligned with autofill behavior, including suppressed
+ *   discussion `_B` slots and assistant eligibility rules.
+ * - Keeps LC counting aligned with autofill behavior because LC keys are
+ *   resolved through `getCodeAndElderOnly()`, which delegates LC parts to
+ *   `getCodeAndElderOnlyLCPart()` and therefore honors view overrides,
+ *   video/no-assignment filtering, and elder-only detection.
+ *
+ * @param sources - Source weeks to analyze for variable midweek assignments.
+ * @param settings - Congregation settings used to determine class count for the view.
+ * @param langKey - Language key used to resolve localized source data.
+ * @param view - Data view whose class count and localized overrides should be applied.
+ * @param sourceLocale - Locale of the source material used by source parsing heuristics.
+ * @returns A map where each key is an `AssignmentCode` and each value is the
+ * number of generated variable assignment occurrences across the provided weeks.
  */
 const getVariableAssignmentsCount = (
   sources: SourceWeekType[],
@@ -199,67 +215,31 @@ const getVariableAssignmentsCount = (
       ?.class_count.value || 1;
 
   const variableAssignmentCounts = new Map<AssignmentCode, number>();
-  sources.forEach((weekSource) => {
-    //counting variable count midweek assignments
-    const mm = weekSource.midweek_meeting;
 
-    // counting ayfParts
-    const ayfParts = [mm.ayf_part1, mm.ayf_part2, mm.ayf_part3, mm.ayf_part4];
-    ayfParts.forEach((part) => {
-      if (part && part.type && part.type[langKey]) {
-        const code = part.type[langKey];
-        if (typeof code === 'number') {
-          variableAssignmentCounts.set(
-            code,
-            (variableAssignmentCounts.get(code) || 0) + classCount
-          );
-          let requiresAssistant = false;
+  for (const weekSource of sources) {
+    for (const key of VARIABLE_MM_KEYS) {
+      if (key.endsWith('_B') && classCount !== 2) continue;
 
-          if (code === AssignmentCode.MM_ExplainingBeliefs) {
-            // Check if "Explaining Beliefs" is a talk.
-            // If it is a talk, the function returns true → no assistant needed.
-            const isTalk = sourcesCheckAYFExplainBeliefsAssignment(
-              part.src?.[langKey] || '',
-              sourceLocale
-            );
-            requiresAssistant = !isTalk;
-          } else {
-            // For all others: Everything except Talk and Bible Reading requires an assistant
-            requiresAssistant =
-              code !== AssignmentCode.MM_Talk &&
-              code !== AssignmentCode.MM_BibleReading;
-          }
+      const resolved = getCodeAndElderOnly(
+        key,
+        weekSource,
+        view,
+        langKey,
+        sourceLocale
+      );
 
-          if (requiresAssistant) {
-            variableAssignmentCounts.set(
-              AssignmentCode.MM_AssistantOnly,
-              (variableAssignmentCounts.get(AssignmentCode.MM_AssistantOnly) ||
-                0) + classCount
-            );
-          }
-        }
-      }
-    });
+      if (!resolved) continue;
 
-    // LC Parts Logic
-    const lcTitles = [
-      mm.lc_part1?.title?.default?.[langKey],
-      mm.lc_part2?.title?.default?.[langKey],
-      mm.lc_part3?.title?.find((t) => t.type === view)?.value || '',
-    ];
-
-    for (const lcTitle of lcTitles) {
-      if (lcTitle && typeof lcTitle === 'string' && lcTitle.trim() !== '') {
-        variableAssignmentCounts.set(
-          AssignmentCode.MM_LCPart,
-          (variableAssignmentCounts.get(AssignmentCode.MM_LCPart) || 0) + 1
-        );
-      }
+      variableAssignmentCounts.set(
+        resolved.code,
+        (variableAssignmentCounts.get(resolved.code) || 0) + 1
+      );
     }
-  });
+  }
 
   return variableAssignmentCounts;
 };
+
 /**
  * Calculates the accumulated "correction counts" for assignments displaced by special events across multiple weeks.
  *
@@ -347,10 +327,10 @@ const getDefaultAssignmentsFrequency = (
   view: DataViewKey
 ): Map<AssignmentCode, number> => {
   const allCodes = [...MM_ASSIGNMENT_CODES, ...WM_ASSIGNMENT_CODES];
-  const EXCLUDED_CODES = [
+  const EXCLUDED_CODES = new Set([
     AssignmentCode.MINISTRY_HOURS_CREDIT,
     AssignmentCode.WM_SpeakerSymposium,
-  ];
+  ]);
   const statsForView = new Map<AssignmentCode, number>();
   const cong_settings = settings.cong_settings;
 
@@ -369,7 +349,7 @@ const getDefaultAssignmentsFrequency = (
   const wmOpenPrayerAuto = !!wm_Settings?.opening_prayer_auto_assigned.value;
 
   allCodes.forEach((code) => {
-    if (EXCLUDED_CODES.includes(code)) return;
+    if (EXCLUDED_CODES.has(code)) return;
 
     let frequency = 0;
 
@@ -544,8 +524,7 @@ export const getAssignmentsWithStats = (
       // undefined means the code is NOT a variable part (e.g., Chairman, Prayer) → use static frequency
       // A numeric value (always > 0) means the code IS variable → use observed frequency
 
-      let variableFrequency = frequency;
-
+      let variableFrequency: number;
       if (relevantWeeksCount > 0) {
         variableFrequency = variableCount
           ? variableCount / relevantWeeksCount
@@ -707,11 +686,11 @@ export type personsAssignmentMetrics = Map<
   Map<string, personsAssignmentMetricsItem>
 >;
 
-export type personWeithMetricsItem = {
+export type personWeightMetricsItem = {
   total_globalScore: number;
   weightingFactor: number;
 };
-export type personsWeightingMetrics = Map<string, personWeithMetricsItem>;
+export type personsWeightingMetrics = Map<string, personWeightMetricsItem>;
 
 /**
  * Calculates a person's theoretical assignment opportunity score within a specific data view.
@@ -799,24 +778,15 @@ export const calculateOpportunityScore = (
         // Retrieve all conflict codes from the matrix and add them to the set
         const conflicts = ASSIGNMENT_CONFLICTS[Number(fixedCode)];
         if (conflicts) {
-          conflicts.forEach((c) => blockedCodes.add(c));
+          conflicts.forEach((c) => {
+            blockedCodes.add(c);
+          });
         }
       }
     }
   }
 
   const codesToEvaluate = [...assignmentsView.values];
-
-  const hasStudentTask = codesToEvaluate.some((c) =>
-    STUDENT_TASK_CODES.includes(c)
-  );
-
-  if (
-    hasStudentTask &&
-    !codesToEvaluate.includes(AssignmentCode.MM_AssistantOnly)
-  ) {
-    codesToEvaluate.push(AssignmentCode.MM_AssistantOnly);
-  }
 
   for (const code of codesToEvaluate) {
     // 2. Ignore score for blocked tasks
@@ -987,7 +957,8 @@ export const getPersonsAssignmentMetrics = (
   const mainMap: personsAssignmentMetrics = new Map();
 
   relevantViews.forEach((view) => {
-    mainMap.set(view, new Map<string, personsAssignmentMetricsItem>());
+    const viewMap = new Map<string, personsAssignmentMetricsItem>();
+    mainMap.set(view, viewMap);
     persons.forEach((person) => {
       const personUID = person.person_uid;
       const personMetrics = calculateOpportunityScore(
@@ -996,7 +967,7 @@ export const getPersonsAssignmentMetrics = (
         assignmentsMetrics,
         fixedAssignmentsByCode
       );
-      mainMap.get(view)!.set(personUID, personMetrics);
+      viewMap.set(personUID, personMetrics);
     });
   });
 
