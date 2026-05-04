@@ -197,28 +197,33 @@ const ASSIGNMENT_PATHS_SECTIONS = {
     },
   },
 } as const;
-
 export type AssignmentConfigType = {
   code?: AssignmentCode;
   elderOnly?: boolean;
 };
 
-const extractConfigs = <
-  T extends Record<string, Record<string, { config: AssignmentConfigType }>>,
->(
-  sections: T
+// Typsichere Definition ohne "any"
+const extractConfigs = (
+  sections: Record<string, Record<string, { config: AssignmentConfigType }>>
 ) => {
   const result: Record<string, AssignmentConfigType> = {};
+
   Object.values(sections).forEach((section) => {
     Object.entries(section).forEach(([key, value]) => {
       result[key] = value.config;
     });
   });
+
   return result;
 };
-export const ASSIGNMENT_DEFAULTS = extractConfigs(ASSIGNMENT_PATHS_SECTIONS);
 
-export function getPropertyByPath<T = unknown>(
+export const ASSIGNMENT_DEFAULTS = extractConfigs(
+  ASSIGNMENT_PATHS_SECTIONS as unknown as Record<
+    string,
+    Record<string, { config: AssignmentConfigType }>
+  >
+);
+export function getPropertyByPath<T>(
   obj: unknown,
   path: string
 ): T | undefined {
@@ -269,13 +274,12 @@ export const exportScheduleToCSV = (
     'Key',
     'Description',
     'Room',
-    'Name(s)',
+    'Name',
   ];
   const rows: string[] = [headers.join(';')];
 
-  const assignmentKeys = Object.keys(ASSIGNMENT_PATH).filter(
-    (key) => !key.includes('_Assistant_')
-  );
+  // Wir durchlaufen jetzt ALLE Keys aus ASSIGNMENT_PATH, inkl. Assistenten
+  const assignmentKeys = Object.keys(ASSIGNMENT_PATH);
 
   weeksList.forEach((schedule) => {
     const source = sources.find((s) => s.weekOf === schedule.weekOf);
@@ -283,8 +287,9 @@ export const exportScheduleToCSV = (
     assignmentKeys.forEach((key) => {
       const path = ASSIGNMENT_PATH[key as keyof typeof ASSIGNMENT_PATH];
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const rawData = getPropertyByPath<any>(schedule, path);
+      const rawData = getPropertyByPath<
+        AssignmentCongregation | AssignmentCongregation[]
+      >(schedule, path);
 
       if (!rawData) return;
 
@@ -293,64 +298,43 @@ export const exportScheduleToCSV = (
       ) as AssignmentCongregation[];
 
       let code = 0;
-
-      if (ASSIGNMENT_DEFAULTS[key]) {
-        code = ASSIGNMENT_DEFAULTS[key].code;
+      const defaultCode = ASSIGNMENT_DEFAULTS[key]?.code;
+      if (defaultCode !== undefined) {
+        code = defaultCode;
       }
 
       if (key.includes('AYFPart') && source) {
-        const match = key.match(/AYFPart(\d+)/);
-        if (match) {
-          const idx = match[1];
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const part = (source.midweek_meeting as any)[`ayf_part${idx}`];
+        // Assistant erzwingt den Assistant-Code
+        if (key.includes('_Assistant')) {
+          code = AssignmentCode.MM_AssistantOnly;
+        } else {
+          const match = key.match(/AYFPart(\d+)/);
+          if (match) {
+            const idx = match[1];
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const part = (source.midweek_meeting as any)[`ayf_part${idx}`];
 
-          if (part && part.type) {
-            const typeVal = part.type['X'] || Object.values(part.type)[0];
-            if (typeVal) code = Number(typeVal);
+            if (part && part.type) {
+              const typeVal = part.type['X'] || Object.values(part.type)[0];
+              if (typeVal !== undefined) code = Number(typeVal);
+            }
           }
         }
       }
-      const sourceTitle = source ? getSourceTitle(key, source) : '';
+
+      let sourceTitle = source ? getSourceTitle(key, source) : '';
+      if (key.includes('_Assistant') && sourceTitle) {
+        sourceTitle = `${sourceTitle} (Assistent)`;
+      }
 
       let classroom = '1';
       if (key.includes('_B') || path.includes('aux_class_1')) classroom = '2';
       if (path.includes('aux_class_2')) classroom = '3';
 
-      const isStudentKey = key.includes('_Student_');
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      let assistantData: any[] = [];
-
-      if (isStudentKey) {
-        const assistantPath = path.replace('.student', '.assistant');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const rawAssistantData = getPropertyByPath<any>(
-          schedule,
-          assistantPath
-        );
-        if (rawAssistantData) {
-          assistantData = Array.isArray(rawAssistantData)
-            ? rawAssistantData
-            : [rawAssistantData];
-        }
-      }
-
       assignmentData.forEach((entry: AssignmentCongregation) => {
         if (!entry.value) return;
 
-        let nameString = getPersonName(entry.value, persons);
-
-        if (isStudentKey) {
-          const partnerEntry = assistantData.find(
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            (a: any) => a.type === entry.type
-          );
-
-          if (partnerEntry && partnerEntry.value) {
-            const partnerName = getPersonName(partnerEntry.value, persons);
-            nameString = `${nameString} / ${partnerName}`;
-          }
-        }
+        const nameString = getPersonName(entry.value, persons);
 
         const row = [
           entry.type,
