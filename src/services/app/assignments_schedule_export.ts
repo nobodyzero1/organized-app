@@ -75,19 +75,26 @@ const getSourceTitle = (
 
   if (key.includes('LCPart1'))
     return (
+      mm.lc_part1?.title?.override?.[0]?.value ??
       mm.lc_part1?.title?.default?.[langKey] ??
-      mm.lc_part1?.title?.[langKey] ??
       ''
     );
+
   if (key.includes('LCPart2'))
     return (
+      mm.lc_part2?.title?.override?.[0]?.value ??
       mm.lc_part2?.title?.default?.[langKey] ??
-      mm.lc_part2?.title?.[langKey] ??
       ''
     );
-  if (key.includes('LCPart3')) return mm.lc_part3?.title?.[0]?.value ?? '';
+
+  if (key.includes('LCPart3')) return mm.lc_part3?.title[0]?.value ?? '';
+
   if (key.includes('CBS'))
-    return mm.lc_cbs?.title?.[0]?.value ?? 'Versammlungsbibelstudium';
+    return (
+      mm.lc_cbs?.title?.override?.[0]?.value ??
+      mm.lc_cbs?.title?.default?.[langKey] ??
+      'Versammlungsbibelstudium'
+    );
 
   // AYF parts – covers _Student_, _Assistant_ and plain AYFPartN keys
   const ayfMatch = key.match(/AYFPart(\d+)/);
@@ -130,7 +137,8 @@ const resolveCode = (
   }
 
   // 2. Statische Defaults (Chairman, Prayer, BibleReading, CBS, …)
-  if (ASSIGNMENT_DEFAULTS[key]) return ASSIGNMENT_DEFAULTS[key].code;
+  if (ASSIGNMENT_DEFAULTS[key]?.code !== undefined)
+    return ASSIGNMENT_DEFAULTS[key].code;
 
   return 0;
 };
