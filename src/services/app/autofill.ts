@@ -266,7 +266,12 @@ export const processAssignmentSettings = (
       const fixedAssignmentsForView = fixedAssignments[viewKey] || {};
       const linkedAssignmentsForView = linkedAssignments[viewKey] || {};
 
-      keysToIgnore.push('WM_SubstituteSpeaker', 'WM_Speaker_Outgoing');
+      keysToIgnore.push(
+        'WM_SubstituteSpeaker',
+        'WM_Speaker_Outgoing',
+        'WM_ClosingPrayer'
+      );
+      linkedAssignmentsForView['WM_ClosingPrayer'] = 'WM_Speaker_Part1';
 
       if (meeting.w_study_conductor_default.value) {
         fixedAssignmentsForView['WM_WTStudy_Conductor'] =
