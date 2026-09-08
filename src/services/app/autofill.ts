@@ -1,12 +1,6 @@
 // services/app/autofill.ts
-import { MeetingType } from '@definition/app';
-import { AssignmentCode, AssignmentFieldType } from '@definition/assignment';
-import { FieldServiceGroupType } from '@definition/field_service_groups';
-import { PersonType } from '@definition/person';
-import { AssignmentHistoryType, SchedWeekType } from '@definition/schedules';
-import { SettingsType } from '@definition/settings';
-import { LivingAsChristiansType, SourceWeekType } from '@definition/sources';
-import { Week } from '@definition/week_type';
+// Externe Module
+import { format, subMonths } from 'date-fns';
 import {
   ASSIGNMENT_DEFAULTS,
   ASSIGNMENT_PATH,
@@ -15,8 +9,21 @@ import {
   STUDENT_ASSIGNMENT,
   WEEK_TYPE_ASSIGNMENT_PATH_KEYS,
 } from '@constants/index';
+import { STUDENT_TASK_CODES } from '@constants/assignmentConflicts';
+import { MeetingType } from '@definition/app';
+import { AssignmentCode, AssignmentFieldType } from '@definition/assignment';
+import { PersonType } from '@definition/person';
+import { AssignmentHistoryType, SchedWeekType } from '@definition/schedules';
+import { SettingsType } from '@definition/settings';
+import {
+  ApplyMinistryType,
+  LivingAsChristiansType,
+  SourceWeekType,
+} from '@definition/sources';
+import { Week } from '@definition/week_type';
+import { dbSchedBulkUpdate } from '@services/dexie/schedules';
 import { store } from '@states/index';
-import { personsByViewState } from '@states/persons';
+import { personsActiveState } from '@states/persons';
 import {
   assignmentsHistoryState,
   isPublicTalkCoordinatorState,
@@ -28,9 +35,8 @@ import {
   settingsState,
   userDataViewState,
 } from '@states/settings';
-import { addDays } from '@utils/date';
 import { sourcesState } from '@states/sources';
-import { dbSchedBulkUpdate } from '@services/dexie/schedules';
+import { addDays } from '@utils/date';
 import {
   getCorrespondingStudentOrAssistant,
   hasAssignmentConflict,
@@ -39,13 +45,12 @@ import {
 } from './assignment_selection';
 import {
   AssignmentStatisticsComplete,
-  DataViewKey,
   getAssignmentsWithStats,
+  getDataViewsWithMeetings,
   getEligiblePersonsPerDataViewAndCode,
   getPersonsAssignmentMetrics,
-  personsAssignmentMetrics,
-  getDataViewsWithMeetings,
   getPersonsWeightingMetrics,
+  personsAssignmentMetrics,
   personsWeightingMetrics,
 } from './assignments_with_stats';
 import { isPersonBlockedOnDate, personIsElder } from './persons';
@@ -59,14 +64,15 @@ import {
   sourcesCheckLCAssignments,
   sourcesCheckLCElderAssignment,
 } from './sources';
-import { subMonths, format } from 'date-fns';
-import { STUDENT_TASK_CODES } from '@constants/assignmentConflicts';
-import { ApplyMinistryType } from '@definition/sources';
+import { fieldServiceGroupsState } from '@states/field_service_groups';
 import {
   handleDownloadAnalysisCSV,
   handleDownloadDebugCSV,
 } from '@services/app/assignments_schedule_export';
 
+/**
+ * Represents a single assignment task waiting to be filled by the autofill algorithm.
+ */
 export type AssignmentTask = {
   schedule: SchedWeekType;
   targetDate: string;
@@ -146,13 +152,22 @@ const getActualMeetingDate = (
   return `${year}/${month}/${day}`;
 };
 
+/**
+ * Result object containing configuration rules derived from congregation settings.
+ * Groups ignored, linked, and fixed assignments by their respective DataView.
+ */
 type AssignmentSettingsResult = {
   ignoredKeysByDataView: Record<string, string[]>;
   linkedAssignments: Record<string, Record<string, string>>;
   fixedAssignments: Record<string, Record<string, string>>;
 };
+
+/**
+ * A mapping of fixed assignments categorized by DataView and AssignmentCode,
+ * pointing to a set of person UIDs who hold those fixed roles.
+ */
 export type FixedAssignmentsByCode = Map<
-  DataViewKey,
+  string,
   Map<AssignmentCode, Set<string>>
 >;
 
@@ -237,20 +252,20 @@ export const processAssignmentSettings = (
 
       // Opening Prayer
       if (meeting.opening_prayer_linked_assignment.value !== '') {
-        // keysToIgnore.push('MM_OpeningPrayer');
         linkedAssignmentsForView['MM_OpeningPrayer'] =
           meeting.opening_prayer_linked_assignment.value;
       }
 
       // Closing Prayer
       if (meeting.closing_prayer_linked_assignment.value !== '') {
-        //keysToIgnore.push('MM_ClosingPrayer');
         linkedAssignmentsForView['MM_ClosingPrayer'] =
           meeting.closing_prayer_linked_assignment.value;
       }
 
       if (keysToIgnore.length > 0) {
         ignoredKeysByDataView[viewKey] = keysToIgnore;
+      }
+      if (Object.keys(linkedAssignmentsForView).length > 0) {
         linkedAssignments[viewKey] = linkedAssignmentsForView;
       }
     });
@@ -280,17 +295,17 @@ export const processAssignmentSettings = (
       }
 
       if (meeting.opening_prayer_auto_assigned.value) {
-        // keysToIgnore.push('WM_OpeningPrayer');
         linkedAssignmentsForView['WM_OpeningPrayer'] = 'WM_Chairman';
       }
 
       if (!isPublicTalkCoordinator) {
-        keysToIgnore.push('WM_Speaker_Part1');
-        keysToIgnore.push('WM_Speaker_Part2');
+        keysToIgnore.push('WM_Speaker_Part1', 'WM_Speaker_Part2');
       }
 
       if (keysToIgnore.length > 0) {
         ignoredKeysByDataView[viewKey] = keysToIgnore;
+      }
+      if (Object.keys(linkedAssignmentsForView).length > 0) {
         linkedAssignments[viewKey] = linkedAssignmentsForView;
       }
     });
@@ -375,7 +390,7 @@ const filterAssignmentKeysByWeektype = (
 const filterAssignmentKeysByPublicTalkType = (
   assignmentPathKeys: AssignmentPathKey[],
   schedule: SchedWeekType,
-  dataView: DataViewKey
+  dataView: string
 ): AssignmentPathKey[] => {
   let relevantAssignmentKeys = assignmentPathKeys;
 
@@ -417,7 +432,7 @@ const getCodeAndElderOnlyAssistant = (
   sourceLocale: string
 ): { code: AssignmentCode; elderOnly: boolean } | undefined => {
   // 1. Extract Part Index from key (AYFPart1, AYFPart2...)
-  const partMatch = key.match(/AYFPart(\d+)/);
+  const partMatch = /AYFPart(\d+)/.exec(key);
   if (!partMatch) return undefined;
   const partIndex = partMatch[1];
 
@@ -475,7 +490,7 @@ const getCodeAndElderOnlyAssistant = (
 export const getCodeAndElderOnlyLCPart = (
   key: AssignmentPathKey,
   source: SourceWeekType,
-  dataView: DataViewKey,
+  dataView: string,
   lang: string,
   sourceLocale: string
 ): { code: AssignmentCode; elderOnly: boolean } | undefined => {
@@ -516,7 +531,7 @@ export const getCodeAndElderOnlyLCPart = (
 
   if (!title) return undefined;
   // CHECK: Video / No assignment?
-  const noAssign = sourcesCheckLCAssignments(title, sourceLocale);
+  const noAssign = sourcesCheckLCAssignments(title, desc, sourceLocale);
   if (noAssign) return undefined;
 
   // CHECK: Elders only?
@@ -580,7 +595,6 @@ export const getCodeAndElderOnly = (
     code = ayfPart.type[lang];
     if (code === AssignmentCode.MM_Discussion && key.includes('_B'))
       return undefined;
-    elderOnly = false;
   } else if (key.includes('LCPart')) {
     const result = getCodeAndElderOnlyLCPart(
       key,
@@ -696,19 +710,36 @@ const getForcedPerson = (
  * @returns An array of `AssignmentTask` objects representing only the empty slots ready to be filled.
  */
 
-export const getTasksArray = (
-  weeksList: SchedWeekType[],
-  sources: SourceWeekType[],
-  dataView: DataViewKey,
-  lang: string,
-  sourceLocale: string,
-  settings: SettingsType,
-  meeting_type: MeetingType,
-  fullHistory: AssignmentHistoryType[],
-  persons: PersonType[],
-  eligibilityMapView: Map<AssignmentCode, Set<string>>,
-  checkAssignmentsSettingsResult: AssignmentSettingsResult
-): AssignmentTask[] => {
+/**
+ * Parameters object for the `getTasksArray` pipeline function.
+ */
+export type GetTasksArrayParams = {
+  weeksList: SchedWeekType[];
+  sources: SourceWeekType[];
+  dataView: string;
+  lang: string;
+  sourceLocale: string;
+  settings: SettingsType;
+  meeting_type: MeetingType;
+  fullHistory: AssignmentHistoryType[];
+  persons: PersonType[];
+  eligibilityMapView: Map<AssignmentCode, Set<string>>;
+  checkAssignmentsSettingsResult: AssignmentSettingsResult;
+};
+
+export const getTasksArray = ({
+  weeksList,
+  sources,
+  dataView,
+  lang,
+  sourceLocale,
+  settings,
+  meeting_type,
+  fullHistory,
+  persons,
+  eligibilityMapView,
+  checkAssignmentsSettingsResult,
+}: GetTasksArrayParams): AssignmentTask[] => {
   const meetingSettings = settings.cong_settings.midweek_meeting.find(
     (record) => record.type === dataView
   );
@@ -937,13 +968,13 @@ export const getSortedTasks = (
     const baseId = getBaseKey(t);
 
     // 1. Store the shared family sortIndex using the strictest value
-    if (!familySortIndex.has(baseId)) {
-      familySortIndex.set(baseId, t.sortIndex);
-    } else {
+    if (familySortIndex.has(baseId)) {
       familySortIndex.set(
         baseId,
         Math.min(familySortIndex.get(baseId)!, t.sortIndex)
       );
+    } else {
+      familySortIndex.set(baseId, t.sortIndex);
     }
   });
 
@@ -1009,7 +1040,7 @@ export const getSortedTasks = (
  * - If Speaker 1 is a standard speaker, they cover the full time slot, so Part 2 is skipped (returns `false`).
  *
  * @param cleanHistory - The current assignment history (including recent autofill additions) to find Speaker 1.
- * @param persons - List of persons to check the assigned speaker's qualifications.
+ * @param symposiumSpeakerUIDs - Set of UIDs for persons who hold the symposium speaker qualification in the current view.
  * @param dataView - The current data view context.
  * @param weekOf - The ISO date string of the target week.
  * @returns `true` if Part 2 should be filled, `false` if it should be skipped.
@@ -1017,7 +1048,7 @@ export const getSortedTasks = (
 const checkSpeaker2Necessary = (
   cleanHistory: AssignmentHistoryType[],
   symposiumSpeakerUIDs: Set<string>,
-  dataView: DataViewKey,
+  dataView: string,
   weekOf: string
 ): boolean => {
   // 1. Find Speaker 1
@@ -1345,7 +1376,7 @@ export const changeSymposiumSpeakerToNormalSpeakerHistory = (
  *
  * Note: This function modifies the provided `persons` array in-place.
  *
- * @param {PersonType[]} persons - The list of persons whose assignments will be evaluated and updated.
+ * @param persons - The list of persons whose assignments will be evaluated and updated.
  */
 export const addImplicitAssistantEligibility = (persons: PersonType[]) => {
   persons.forEach((person) => {
@@ -1388,7 +1419,7 @@ export const addImplicitAssistantEligibility = (persons: PersonType[]) => {
 export const handleDynamicAssignmentAutofill = (
   start: string,
   end: string,
-  languageGroups: FieldServiceGroupType[],
+  //languageGroups: FieldServiceGroupType[],
   meeting_type: MeetingType
 ): {
   modifiedWeeks: SchedWeekType[];
@@ -1397,7 +1428,14 @@ export const handleDynamicAssignmentAutofill = (
   // Get data from store
   const sources = structuredClone(store.get(sourcesState));
   const fullHistory = structuredClone(store.get(assignmentsHistoryState));
-  const persons = structuredClone(store.get(personsByViewState));
+  // Use the full active persons list instead of the view-scoped one:
+  // statistics, opportunity scores and weighting factors must be computed
+  // congregation-wide. The candidate pool for the active view is still
+  // restricted via eligibilityMapView in filterCandidates.
+  const persons = structuredClone(store.get(personsActiveState));
+  const rawLanguageGroups = store
+    .get(fieldServiceGroupsState)
+    .filter((g) => g.group_data.language_group && !g.group_data._deleted);
   const schedules = structuredClone(store.get(schedulesState));
   const settings = structuredClone(store.get(settingsState));
   const dataView = store.get(userDataViewState);
@@ -1405,7 +1443,21 @@ export const handleDynamicAssignmentAutofill = (
   const sourceLocale = store.get(JWLangLocaleState);
   const isPublicTalkCoordinator = store.get(isPublicTalkCoordinatorState);
 
-  const relevantViews = getDataViewsWithMeetings(settings, languageGroups);
+  // Skip autofill if the active language group has disabled this meeting type.
+  // 'main' and groups without the flag (legacy data) stay active, mirroring
+  // the isMidweekActive/isWeekendActive handling in getAssignmentsWithStats.
+  const activeGroup = rawLanguageGroups.find((g) => g.group_id === dataView);
+
+  const isMeetingActive =
+    (meeting_type === 'midweek'
+      ? activeGroup?.group_data.midweek_meeting
+      : activeGroup?.group_data.weekend_meeting) ?? true;
+
+  if (!isMeetingActive) {
+    return { modifiedWeeks: [], updatedSchedules: schedules };
+  }
+
+  const relevantViews = getDataViewsWithMeetings(settings, rawLanguageGroups);
   const weeksList = schedules.filter(
     (record) => record.weekOf >= start && record.weekOf <= end
   );
@@ -1425,7 +1477,7 @@ export const handleDynamicAssignmentAutofill = (
 
   addImplicitAssistantEligibility(persons);
 
-  // getting fixed and linked assignments from settings
+  // getting ignored, fixed and linked assignments from settings
   const checkAssignmentsSettingsResult = processAssignmentSettings(
     settings,
     isPublicTalkCoordinator
@@ -1451,7 +1503,7 @@ export const handleDynamicAssignmentAutofill = (
     statsSources,
     statsSchedules,
     settings,
-    languageGroups,
+    rawLanguageGroups,
     sourceLocale
   );
 
@@ -1469,13 +1521,14 @@ export const handleDynamicAssignmentAutofill = (
   );
 
   const eligibilityMapView =
-    getEligiblePersonsPerDataViewAndCode(persons).get(dataView) ??
-    new Map<AssignmentCode, Set<string>>();
+    getEligiblePersonsPerDataViewAndCode(persons, rawLanguageGroups).get(
+      dataView
+    ) ?? new Map<AssignmentCode, Set<string>>();
 
   // Collection array for all tasks to be planned in the given schedule weeks
 
   const unsortedTasks = [
-    ...getTasksArray(
+    ...getTasksArray({
       weeksList,
       sources,
       dataView,
@@ -1486,8 +1539,8 @@ export const handleDynamicAssignmentAutofill = (
       fullHistory,
       persons,
       eligibilityMapView,
-      checkAssignmentsSettingsResult
-    ),
+      checkAssignmentsSettingsResult,
+    }),
   ];
 
   const weekOfs = [...new Set(weeksList.map((w) => w.weekOf))];
@@ -1499,8 +1552,8 @@ export const handleDynamicAssignmentAutofill = (
     const weekTasks = tasks.filter((t) => t.schedule.weekOf === weekOf);
 
     // 1. round
-    const targetTaskCounts = processingTasks(
-      weekTasks,
+    const targetTaskCounts = processingTasks({
+      tasks: weekTasks,
       checkAssignmentsSettingsResult,
       fullHistory,
       persons,
@@ -1510,8 +1563,8 @@ export const handleDynamicAssignmentAutofill = (
       weightingMetrics,
       assignmentsMetrics,
       symposiumSpeakerUIDs,
-      'default'
-    );
+      sortStrategy: 'default',
+    });
 
     const newCandidatesPool: PersonType[] = [];
     targetTaskCounts.forEach((value, key) => {
@@ -1537,8 +1590,8 @@ export const handleDynamicAssignmentAutofill = (
     );
 
     // Second round for optimizing tasks distribution
-    processingTasks(
-      weekTasks,
+    processingTasks({
+      tasks: weekTasks,
       checkAssignmentsSettingsResult,
       fullHistory,
       persons,
@@ -1548,9 +1601,9 @@ export const handleDynamicAssignmentAutofill = (
       weightingMetrics,
       assignmentsMetrics,
       symposiumSpeakerUIDs,
-      'alternative',
-      targetTaskCounts
-    );
+      sortStrategy: 'alternative',
+      targetCounts: targetTaskCounts,
+    });
   }
 
   return {
@@ -1616,6 +1669,21 @@ export const deleteTasksFromHistory = (
     }
   });
 };
+
+/**
+ * Recalculates the scarcity (`sortIndex`) of assignment tasks for Round 2 processing.
+ *
+ * This function updates the `sortIndex` for each task by determining the number
+ * of eligible candidates currently available in the narrowed-down candidate pool.
+ * Tasks with fewer available candidates will receive a lower index to be prioritized
+ * in the subsequent Round 2 distribution.
+ *
+ * @param tasks - The array of tasks to update in place.
+ * @param persons - The refined pool of candidates available for Round 2.
+ * @param fullHistory - The current assignment history used for conflict detection.
+ * @param eligibilityMapView - Precomputed map of eligible UIDs per assignment code.
+ * @param checkAssignmentsSettingsResult - Processed settings containing fixed/linked rules.
+ */
 export const adjustTasksSortIndex = (
   tasks: AssignmentTask[],
   persons: PersonType[],
@@ -1666,20 +1734,35 @@ export const adjustTasksSortIndex = (
  * @param targetCounts - (Round 2 only) `Map<personUID, maxAssignments>`
  * @returns `Map<personUID, assignmentsReceived>` for Round 2 quota planning
  */
-const processingTasks = (
-  tasks: AssignmentTask[],
-  checkAssignmentsSettingsResult: AssignmentSettingsResult,
-  fullHistory: AssignmentHistoryType[],
-  persons: PersonType[],
-  dataView: DataViewKey,
-  eligibilityMapView: Map<AssignmentCode, Set<string>>,
-  personsMetrics: personsAssignmentMetrics,
-  weightingMetrics: personsWeightingMetrics,
-  assignmentsMetrics: AssignmentStatisticsComplete,
-  symposiumSpeakerUIDs: Set<string>,
-  sortStrategy: 'default' | 'alternative' = 'default',
-  targetCounts?: Map<string, number>
-): Map<string, number> => {
+type ProcessingTasksParams = {
+  tasks: AssignmentTask[];
+  checkAssignmentsSettingsResult: AssignmentSettingsResult;
+  fullHistory: AssignmentHistoryType[];
+  persons: PersonType[];
+  dataView: string;
+  eligibilityMapView: Map<AssignmentCode, Set<string>>;
+  personsMetrics: personsAssignmentMetrics;
+  weightingMetrics: personsWeightingMetrics;
+  assignmentsMetrics: AssignmentStatisticsComplete;
+  symposiumSpeakerUIDs: Set<string>;
+  sortStrategy?: 'default' | 'alternative';
+  targetCounts?: Map<string, number>;
+};
+
+const processingTasks = ({
+  tasks,
+  checkAssignmentsSettingsResult,
+  fullHistory,
+  persons,
+  dataView,
+  eligibilityMapView,
+  personsMetrics,
+  weightingMetrics,
+  assignmentsMetrics,
+  symposiumSpeakerUIDs,
+  sortStrategy = 'default',
+  targetCounts,
+}: ProcessingTasksParams): Map<string, number> => {
   const sortedTasks = getSortedTasks(tasks, checkAssignmentsSettingsResult);
   const assignedPersons = new Map<string, number>();
 
@@ -1779,20 +1862,18 @@ const processingTasks = (
 export const schedulesStartAutofill = async (
   start: string,
   end: string,
-  meeting: 'midweek' | 'weekend',
-  languageGroups: FieldServiceGroupType[]
-) => {
+  meeting: 'midweek' | 'weekend'
+): Promise<number> => {
   try {
-    if (start.length === 0 || end.length === 0) return;
+    if (start.length === 0 || end.length === 0) return 0;
 
     const { modifiedWeeks, updatedSchedules } = handleDynamicAssignmentAutofill(
       start,
       end,
-      languageGroups,
       meeting
     );
 
-    if (!modifiedWeeks || modifiedWeeks.length === 0) return;
+    if (!modifiedWeeks || modifiedWeeks.length === 0) return 0;
 
     await dbSchedBulkUpdate(modifiedWeeks);
 
@@ -1800,6 +1881,7 @@ export const schedulesStartAutofill = async (
 
     const newFullHistory = schedulesBuildHistoryList();
     store.set(assignmentsHistoryState, newFullHistory);
+    return modifiedWeeks.length;
   } catch (error) {
     throw new Error(
       `autofill error: ${error instanceof Error ? error.message : String(error)}`

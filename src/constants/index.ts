@@ -659,18 +659,24 @@ const ASSIGNMENT_PATHS_SECTIONS = {
   },
 } as const;
 
+type FlattenSectionKeys<T extends Record<string, Record<string, unknown>>> = {
+  [S in keyof T]: Extract<keyof T[S], string>;
+}[keyof T];
+
 const extractPaths = <
   T extends Record<string, Record<string, { path: string }>>,
 >(
   sections: T
-) => {
+): Record<FlattenSectionKeys<T>, string> => {
   const result: Record<string, string> = {};
+
   Object.values(sections).forEach((section) => {
     Object.entries(section).forEach(([key, value]) => {
       result[key] = value.path;
     });
   });
-  return result;
+
+  return result as Record<FlattenSectionKeys<T>, string>;
 };
 
 const extractConfigs = <
@@ -794,7 +800,8 @@ export const WEEK_TYPE_ASSIGNMENT_PATH_KEYS = new Map<
     getSectionKeys(
       AssignmentSectionName.MM_CHAIRMAN,
       AssignmentSectionName.MM_AYF_PART,
-      AssignmentSectionName.MM_LC
+      AssignmentSectionName.MM_LC,
+      AssignmentSectionName.MM_CBS
     ),
   ],
 
@@ -802,7 +809,8 @@ export const WEEK_TYPE_ASSIGNMENT_PATH_KEYS = new Map<
     Week.LIVING_PART,
     getSectionKeys(
       AssignmentSectionName.MM_CHAIRMAN,
-      AssignmentSectionName.MM_LC
+      AssignmentSectionName.MM_LC,
+      AssignmentSectionName.MM_CBS
     ),
   ],
 
@@ -853,6 +861,13 @@ export const STUDENT_ASSIGNMENT = [
 
 export const ASSISTANT_ASSIGNMENT = [
   ...STUDENT_ASSIGNMENT,
+  AssignmentCode.MM_AssistantOnly,
+];
+
+export const CLASSROOM_QUALIFICATIONS_ASSIGNMENT = [
+  AssignmentCode.MM_BibleReading,
+  ...STUDENT_ASSIGNMENT,
+  AssignmentCode.MM_Talk,
   AssignmentCode.MM_AssistantOnly,
 ];
 
@@ -1122,3 +1137,10 @@ export const WEEK_TYPE_ASSIGNMENT_CODES = new Map<Week, Set<AssignmentCode>>([
   ],
   [Week.NO_MEETING, new Set<AssignmentCode>()],
 ]);
+
+// the curves the app animates with: a quick settle on the way in, a plain
+// acceleration on the way out
+export const EASING = {
+  expoOut: 'cubic-bezier(0.16, 1, 0.3, 1)',
+  easeIn: 'cubic-bezier(0.55, 0, 1, 0.45)',
+};

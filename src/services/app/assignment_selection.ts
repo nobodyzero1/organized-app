@@ -1,30 +1,88 @@
 // services/app/assignment_selection.ts
-import { AssignmentHistoryType } from '@definition/schedules';
-import { PersonType } from '@definition/person';
+import { addWeeks, differenceInCalendarWeeks, subWeeks } from 'date-fns';
+import {
+  ASSIGNMENT_CONFLICTS,
+  STUDENT_TASK_CODES,
+} from '@constants/assignmentConflicts';
 import {
   AssignmentCode,
   MM_ASSIGNMENT_CODES,
   WM_ASSIGNMENT_CODES,
 } from '@definition/assignment';
+import { PersonType } from '@definition/person';
+import { AssignmentHistoryType } from '@definition/schedules';
 import {
-  ASSIGNMENT_CONFLICTS,
-  STUDENT_TASK_CODES,
-} from '@constants/assignmentConflicts';
-import { AssignmentTask } from './autofill';
-import {
-  personsAssignmentMetrics,
   AssignmentStatisticsView,
+  personsAssignmentMetrics,
   personsWeightingMetrics,
 } from './assignments_with_stats';
+import { AssignmentTask } from './autofill';
 
-import { differenceInCalendarWeeks, subWeeks, addWeeks } from 'date-fns';
-import { DataViewKey } from './assignments_with_stats';
-
+/**
+ * Represents the calendar-week distances to a person's closest past and future assignments.
+ */
 export interface DistanceResult {
   minPast: number; // e.g. -3 (3 weeks in the past), or -Infinity
   minFuture: number; // e.g. 3 (3 weeks in the future), or Infinity
   hasAssignmentToday: boolean;
 }
+/**
+ * Checks if a single assignment history entry matches the specified data view and assignment codes.
+ *
+ * @param entry - The assignment history entry to evaluate.
+ * @param personUid - The unique identifier of the person.
+ * @param dataView - The specific data view to filter by (optional).
+ * @param hasDataView - Boolean flag indicating if a data view filter is active.
+ * @param codesToCheck - Array of specific assignment codes to include (optional).
+ * @param hasCodesToCheck - Boolean flag indicating if code inclusion filters are active.
+ * @param codesToIgnore - Array of assignment codes to explicitly exclude.
+ * @returns `true` if the entry matches all applied filters, otherwise `false`.
+ */
+const matchesEntryFilters = (
+  entry: AssignmentHistoryType,
+  personUid: string,
+  dataView: string | undefined,
+  hasDataView: boolean,
+  codesToCheck: AssignmentCode[] | undefined,
+  hasCodesToCheck: boolean,
+  codesToIgnore: AssignmentCode[]
+): boolean => {
+  if (entry.assignment.person !== personUid) return false;
+
+  const code = entry.assignment.code;
+  if (code && codesToIgnore.includes(code)) return false;
+  if (hasCodesToCheck && (!code || !codesToCheck!.includes(code))) return false;
+  if (hasDataView && entry.assignment.dataView !== dataView) return false;
+
+  return true;
+};
+/**
+ * Updates the tracking object with the shortest past or future distance in weeks.
+ *
+ * @param result - The mutable distance result object being updated.
+ * @param weeks - The calculated distance in calendar weeks.
+ */
+const updateDistanceResult = (result: DistanceResult, weeks: number): void => {
+  if (weeks === 0) {
+    result.hasAssignmentToday = true;
+  } else if (weeks < 0 && weeks > result.minPast) {
+    // Past assignment (negative value, closer to 0 is more recent)
+    result.minPast = weeks;
+  } else if (weeks > 0 && weeks < result.minFuture) {
+    // Future assignment (positive value)
+    result.minFuture = weeks;
+  }
+};
+/**
+ * Determines if the current distance result is already the best possible outcome.
+ * An optimal result is having an assignment today, one week in the past, and one week in the future.
+ *
+ * @param result - The distance result to evaluate.
+ * @returns `true` if the result is optimal and further scanning can be skipped.
+ */
+const isOptimalResult = (result: DistanceResult): boolean =>
+  result.hasAssignmentToday && result.minPast === -1 && result.minFuture === 1;
+
 /**
  * Calculates the shortest distance in calendar weeks between a target date and a person's closest past and future assignments.
  *
@@ -49,55 +107,53 @@ export const getDistanceInWeeks = (
   history: AssignmentHistoryType[],
   personUid: string,
   targetDateStr: string,
-  dataView?: DataViewKey,
+  dataView?: string,
   codesToCheck?: AssignmentCode[],
   codesToIgnore: AssignmentCode[] = []
 ): DistanceResult => {
   const targetDate = new Date(targetDateStr);
 
-  let minPast = -Infinity;
-  let minFuture = Infinity;
-  let hasAssignmentToday = false;
+  // Pre-resolve optional filter conditions once to avoid repeated checks
+  const hasCodesToCheck = !!codesToCheck?.length;
+  const hasDataView = !!dataView?.length;
+
+  const result: DistanceResult = {
+    minPast: -Infinity,
+    minFuture: Infinity,
+    hasAssignmentToday: false,
+  };
 
   for (const entry of history) {
-    if (entry.assignment.person !== personUid) continue;
-
-    const code = entry.assignment.code;
-    if (codesToIgnore.includes(code!)) continue;
-
-    const isRelevantKey =
-      codesToCheck && codesToCheck.length > 0
-        ? codesToCheck.includes(code!)
-        : true;
-    const isRelevantView =
-      dataView && dataView.length > 0
-        ? dataView === entry.assignment.dataView
-        : true;
-
-    if (isRelevantKey && isRelevantView) {
-      const entryDate = new Date(entry.weekOf);
-      const weeks = differenceInCalendarWeeks(entryDate, targetDate, {
-        weekStartsOn: 1,
-      });
-
-      if (weeks === 0) {
-        hasAssignmentToday = true;
-        continue;
-      }
-
-      // Is it in the past? (negative value)
-      if (weeks < 0 && weeks > minPast) {
-        minPast = weeks;
-      }
-
-      // Is it in the future? (positive value
-      if (weeks > 0 && weeks < minFuture) {
-        minFuture = weeks;
-      }
+    if (
+      !matchesEntryFilters(
+        entry,
+        personUid,
+        dataView,
+        hasDataView,
+        codesToCheck,
+        hasCodesToCheck,
+        codesToIgnore
+      )
+    ) {
+      continue;
     }
+
+    const weeks = differenceInCalendarWeeks(
+      new Date(entry.weekOf),
+      targetDate,
+      {
+        weekStartsOn: 1,
+      }
+    );
+
+    updateDistanceResult(result, weeks);
+
+    // Early exit: an assignment today plus adjacent weeks on both sides
+    // is the best possible result — no need to scan the rest of the history.
+    if (isOptimalResult(result)) break;
   }
 
-  return { minPast, minFuture, hasAssignmentToday };
+  return result;
 };
 
 /**
@@ -120,7 +176,7 @@ export const getLastAssignmentDateByWeeksDistance = (
 
   const targetDate = new Date(targetDateStr);
   // Validation: Check if the date is valid
-  if (isNaN(targetDate.getTime())) return null;
+  if (Number.isNaN(targetDate.getTime())) return null;
 
   return subWeeks(targetDate, weeksDistance);
 };
@@ -191,7 +247,6 @@ export const getCorrespondingStudentOrAssistant = (
  * @returns The smallest absolute distance in calendar weeks to an existing pairing.
  * Returns `9999` if this student-assistant combination has never been assigned.
  */
-
 const getClosestPairingDistanceInWeeks = (
   assistantUid: string,
   studentUid: string,
@@ -265,7 +320,7 @@ export const getActualLoad = (
   personUid: string,
   history: AssignmentHistoryType[],
   targetDateStr: string,
-  dataView?: DataViewKey,
+  dataView?: string,
   codesToCheck?: AssignmentCode[]
 ): number => {
   const distances = getDistanceInWeeks(
@@ -471,6 +526,108 @@ const getWeeksSinceLastRoom2 = (
   return minWeeks === Infinity ? 9999 : minWeeks;
 };
 
+/**
+ * Caches calculated fairness tiers and statistical metrics for a specific assignment candidate.
+ */
+type CandidateMeta = {
+  globalTier: number;
+  dataViewTier: number;
+  assignmentsKindTier: number;
+  assignmentCodeTier: number;
+  percentageGap: number;
+  targetPercentage: number;
+  actualPercentage: number;
+  assistantClosestPairingDistance: number;
+  tasksInCurrentMeeting: number;
+  weeksSinceLastRoom2: number;
+};
+
+/**
+ * Compares two candidate metadata objects using the default broad fairness distribution strategy (Round 1).
+ *
+ * This sorting algorithm applies a cascading sequence of tie-breakers to prioritize candidates.
+ * The evaluation strictly follows this hierarchical order:
+ * 1. **Current Meeting Load:** Minimizes `tasksInCurrentMeeting` (candidates with fewer tasks today are preferred).
+ * 2. **Global Fairness:** Maximizes `globalTier` (prioritizes candidates with a higher global under-assignment score).
+ * 3. **DataView Fairness:** Maximizes `dataViewTier` (prioritizes candidates under-assigned in the current group/language).
+ * 4. **Meeting Type Fairness:** Maximizes `assignmentsKindTier` (balances Midweek vs. Weekend workload).
+ * 5. **Task Specific Fairness:** Maximizes `assignmentCodeTier` (balances the specific assignment code frequency).
+ * 6. **Pairing Rotation:** Maximizes `assistantClosestPairingDistance` (prefers assistants who haven't worked with the student recently).
+ *
+ * @param metaA - Metadata metrics for the first candidate.
+ * @param metaB - Metadata metrics for the second candidate.
+ * @returns A negative number if candidate A should precede B, a positive number if B should precede A, or `0` if both are equally ranked.
+ */
+const compareByDefaultStrategy = (
+  metaA: CandidateMeta,
+  metaB: CandidateMeta
+): number => {
+  if (metaA.tasksInCurrentMeeting !== metaB.tasksInCurrentMeeting) {
+    return metaA.tasksInCurrentMeeting - metaB.tasksInCurrentMeeting;
+  }
+  if (metaA.globalTier !== metaB.globalTier) {
+    return metaB.globalTier - metaA.globalTier;
+  }
+  if (metaA.dataViewTier !== metaB.dataViewTier) {
+    return metaB.dataViewTier - metaA.dataViewTier;
+  }
+  if (metaA.assignmentsKindTier !== metaB.assignmentsKindTier) {
+    return metaB.assignmentsKindTier - metaA.assignmentsKindTier;
+  }
+  if (metaA.assignmentCodeTier !== metaB.assignmentCodeTier) {
+    return metaB.assignmentCodeTier - metaA.assignmentCodeTier;
+  }
+  if (
+    metaA.assistantClosestPairingDistance !==
+    metaB.assistantClosestPairingDistance
+  ) {
+    return (
+      metaB.assistantClosestPairingDistance -
+      metaA.assistantClosestPairingDistance
+    );
+  }
+  return 0;
+};
+
+/**
+ * Compares two candidate metadata objects using the alternative quota-filling strategy (Round 2).
+ *
+ * This sorting algorithm focuses on bringing candidates closer to their target assignment quotas.
+ * It applies a cascading sequence of tie-breakers, strictly following this hierarchical order:
+ * 1. **Quota Gap (Percentage):** Maximizes `percentageGap` (prioritizes candidates who are furthest below their target assignment percentage).
+ * 2. **Current Meeting Load:** Minimizes `tasksInCurrentMeeting` (candidates with fewer tasks today are preferred).
+ * 3. **Task Specific Fairness:** Maximizes `assignmentCodeTier` (prioritizes candidates under-assigned for this specific task code).
+ * 4. **Pairing Rotation:** Maximizes `assistantClosestPairingDistance` (prefers assistants who haven't worked with the student recently).
+ *
+ * @param metaA - Metadata metrics for the first candidate.
+ * @param metaB - Metadata metrics for the second candidate.
+ * @returns A negative number if candidate A should precede B, a positive number if B should precede A, or `0` if both are equally ranked.
+ */
+const compareByAlternativeStrategy = (
+  metaA: CandidateMeta,
+  metaB: CandidateMeta
+): number => {
+  if (Math.abs(metaA.percentageGap - metaB.percentageGap) > 0.01) {
+    return metaB.percentageGap - metaA.percentageGap;
+  }
+  if (metaA.tasksInCurrentMeeting !== metaB.tasksInCurrentMeeting) {
+    return metaA.tasksInCurrentMeeting - metaB.tasksInCurrentMeeting;
+  }
+  if (metaA.assignmentCodeTier !== metaB.assignmentCodeTier) {
+    return metaB.assignmentCodeTier - metaA.assignmentCodeTier;
+  }
+  if (
+    metaA.assistantClosestPairingDistance !==
+    metaB.assistantClosestPairingDistance
+  ) {
+    return (
+      metaB.assistantClosestPairingDistance -
+      metaA.assistantClosestPairingDistance
+    );
+  }
+  return 0;
+};
+
 //MARK: MAIN SORT FUNCTION
 /**
  * Sorts assignment candidates using multi-level fairness metrics across two distinct strategies.
@@ -513,21 +670,7 @@ export const sortCandidatesMultiLevel = (
   assignmentsMetricsTotal: AssignmentStatisticsView | undefined,
   sortStrategy: 'default' | 'alternative' = 'default'
 ): PersonType[] => {
-  const metaCache = new Map<
-    string,
-    {
-      globalTier: number;
-      dataViewTier: number;
-      assignmentsKindTier: number;
-      assignmentCodeTier: number;
-      percentageGap: number;
-      targetPercentage: number;
-      actualPercentage: number;
-      assistantClosestPairingDistance: number;
-      tasksInCurrentMeeting: number;
-      weeksSinceLastRoom2: number;
-    }
-  >();
+  const metaCache = new Map<string, CandidateMeta>();
 
   const personsDataViewMetrics = personsCompleteMetrics.get(task.dataView);
   const room1SwapEligibleTask = isRoom1SwapEligibleTask(task);
@@ -620,8 +763,6 @@ export const sortCandidatesMultiLevel = (
 
       if (actualAssignmentsKindTypeLoad > 0) {
         actualPercentage = actualCodeLoad / actualAssignmentsKindTypeLoad;
-      } else {
-        actualPercentage = 0;
       }
 
       percentageGap = targetPercentage - actualPercentage;
@@ -692,61 +833,12 @@ export const sortCandidatesMultiLevel = (
 
     if (!metaA || !metaB) return 0;
 
-    // ----------------------------------------------------
-    // ROUND 1: DEFAULT STRATEGY (Initial broad distribution)
-    // ----------------------------------------------------
     if (sortStrategy === 'default') {
-      if (metaA.tasksInCurrentMeeting !== metaB.tasksInCurrentMeeting) {
-        return metaA.tasksInCurrentMeeting - metaB.tasksInCurrentMeeting;
-      }
-
-      if (metaA.globalTier !== metaB.globalTier) {
-        return metaB.globalTier - metaA.globalTier;
-      }
-      if (metaA.dataViewTier !== metaB.dataViewTier) {
-        return metaB.dataViewTier - metaA.dataViewTier;
-      }
-      if (metaA.assignmentsKindTier !== metaB.assignmentsKindTier) {
-        return metaB.assignmentsKindTier - metaA.assignmentsKindTier;
-      }
-      if (metaA.assignmentCodeTier !== metaB.assignmentCodeTier) {
-        return metaB.assignmentCodeTier - metaA.assignmentCodeTier;
-      }
-      if (
-        metaA.assistantClosestPairingDistance !==
-        metaB.assistantClosestPairingDistance
-      ) {
-        return (
-          metaB.assistantClosestPairingDistance -
-          metaA.assistantClosestPairingDistance
-        );
-      }
-      return 0;
+      return compareByDefaultStrategy(metaA, metaB);
     }
 
-    // ----------------------------------------------------
-    // ROUND 2: ALTERNATIVE STRATEGY (Gap/Quota Filling)
-    // ----------------------------------------------------
     if (sortStrategy === 'alternative') {
-      if (Math.abs(metaA.percentageGap - metaB.percentageGap) > 0.01) {
-        return metaB.percentageGap - metaA.percentageGap;
-      }
-      if (metaA.tasksInCurrentMeeting !== metaB.tasksInCurrentMeeting) {
-        return metaA.tasksInCurrentMeeting - metaB.tasksInCurrentMeeting;
-      }
-      if (metaA.assignmentCodeTier !== metaB.assignmentCodeTier) {
-        return metaB.assignmentCodeTier - metaA.assignmentCodeTier;
-      }
-      if (
-        metaA.assistantClosestPairingDistance !==
-        metaB.assistantClosestPairingDistance
-      ) {
-        return (
-          metaB.assistantClosestPairingDistance -
-          metaA.assistantClosestPairingDistance
-        );
-      }
-      return 0;
+      return compareByAlternativeStrategy(metaA, metaB);
     }
 
     return 0;
