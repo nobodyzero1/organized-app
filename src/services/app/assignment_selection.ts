@@ -875,7 +875,6 @@ export const sortCandidatesMultiLevel = (
     const m = metaCache.get(p.person_uid)!;
     return {
       Name: `${p.person_data.person_lastname.value}, ${p.person_data.person_firstname.value}`,
-      GlobalTier: m.globalTier,
       DataViewTier: m.dataViewTier,
       MeetingTypeTier: m.assignmentsKindTier,
       ExpectedPct: (m.targetPercentage * 100).toFixed(1) + '%',
