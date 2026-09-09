@@ -1939,12 +1939,12 @@ export const schedulesStartAutofill = async (
 
     const newFullHistory = schedulesBuildHistoryList();
     store.set(assignmentsHistoryState, newFullHistory);
+    handleDownloadDebugCSV();
+    handleDownloadAnalysisCSV();
     return modifiedWeeks.length;
   } catch (error) {
     throw new Error(
       `autofill error: ${error instanceof Error ? error.message : String(error)}`
     );
   }
-  handleDownloadDebugCSV();
-  handleDownloadAnalysisCSV();
 };
