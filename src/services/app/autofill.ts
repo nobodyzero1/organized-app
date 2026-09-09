@@ -27,6 +27,7 @@ import { personsActiveState } from '@states/persons';
 import {
   assignmentsHistoryState,
   isPublicTalkCoordinatorState,
+  isWeekendEditorState,
   schedulesState,
 } from '@states/schedules';
 import {
@@ -36,7 +37,7 @@ import {
   userDataViewState,
 } from '@states/settings';
 import { sourcesState } from '@states/sources';
-import { addDays } from '@utils/date';
+import { formatDate } from '@utils/date';
 import {
   getCorrespondingStudentOrAssistant,
   hasAssignmentConflict,
@@ -53,11 +54,16 @@ import {
   personsAssignmentMetrics,
   personsWeightingMetrics,
 } from './assignments_with_stats';
-import { isPersonBlockedOnDate, personIsElder } from './persons';
+import {
+  isPersonBlockedOnDate,
+  personAssignmentHasClassroom,
+  personIsElder,
+} from './persons';
 import {
   schedulesAutofillSaveAssignment,
   schedulesBuildHistoryList,
   schedulesGetData,
+  schedulesResolveMeetingDate,
 } from './schedules';
 import {
   sourcesCheckAYFExplainBeliefsAssignment,
@@ -115,41 +121,33 @@ const getWeekType = (
 };
 
 /**
- * Calculates the exact meeting date from week start (`weekOf`) + configured weekday offset.
+ * Returns the actual meeting date of a week as a `YYYY/MM/DD` string.
  *
- * Determines the meeting day-of-week from congregation settings based on meeting type and data view,
- * then adds that offset to the `weekOf` (Monday) date.
+ * Thin formatting wrapper around `schedulesResolveMeetingDate`. The result feeds
+ * availability checks (`isPersonBlockedOnDate`), so it must match the day the
+ * meeting actually takes place — including special-week and CO-visit overrides.
  *
- * **Output Format:** `YYYY/MM/DD` (e.g., `'2026/03/05'` for Thursday meeting)
- *
- * @param weekOf - Week start date (Monday) as ISO string (e.g., `'2026-03-02'`)
  * @param settings - Congregation settings with meeting weekday configurations
- * @param dataView - Group/view identifier (e.g., `'main'`, `'group_ID'`)
+ * @param schedule - The schedule record of the week
  * @param meeting_type - `'midweek'` or `'weekend'`
+ * @param dataView - The data view to resolve the date for
  *
  * @returns Meeting date string in `YYYY/MM/DD` format
  */
 const getActualMeetingDate = (
-  weekOf: string,
   settings: SettingsType,
-  dataView: string,
-  meeting_type: MeetingType
+  schedule: SchedWeekType,
+  meeting_type: MeetingType,
+  dataView: string
 ): string => {
-  const meetingDay =
-    meeting_type === 'midweek'
-      ? settings.cong_settings.midweek_meeting.find(
-          (record) => record.type === dataView
-        )?.weekday.value
-      : (settings.cong_settings.weekend_meeting.find(
-          (record) => record.type === dataView
-        )?.weekday.value ?? 0);
+  const meetingDate = schedulesResolveMeetingDate({
+    settings,
+    schedule,
+    meeting: meeting_type,
+    dataView,
+  });
 
-  const dateObj = addDays(weekOf, meetingDay ?? 0);
-  const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
-
-  return `${year}/${month}/${day}`;
+  return formatDate(meetingDate, 'yyyy/MM/dd');
 };
 
 /**
@@ -230,7 +228,8 @@ export const buildFixedAssignmentsByCode = (
  */
 export const processAssignmentSettings = (
   settings: SettingsType,
-  isPublicTalkCoordinator: boolean
+  isPublicTalkCoordinator: boolean,
+  isWeekendEditor: boolean
 ): AssignmentSettingsResult => {
   const ignoredKeysByDataView: Record<string, string[]> = {};
   const linkedAssignments: Record<string, Record<string, string>> = {};
@@ -300,6 +299,13 @@ export const processAssignmentSettings = (
 
       if (!isPublicTalkCoordinator) {
         keysToIgnore.push('WM_Speaker_Part1', 'WM_Speaker_Part2');
+      }
+
+      if (!isWeekendEditor) {
+        const weekendKeys = ASSIGNMENT_PATH_KEYS.filter(
+          (key) => key.startsWith('WM_') && !key.startsWith('WM_Speaker_Part')
+        );
+        keysToIgnore.push(...weekendKeys);
       }
 
       if (keysToIgnore.length > 0) {
@@ -377,7 +383,7 @@ const filterAssignmentKeysByWeektype = (
  * This function checks the schedule to determine if the public talk is handled by a local speaker.
  * If the talk type is NOT 'localSpeaker' (e.g., it is a visiting speaker), the standard
  * assignment keys for the Public Talk Speaker (`WM_Speaker_Part1`, `WM_Speaker_Part2`)
- * are removed from the list.
+ * are removed from the list and also the closing prayer is removed.
  *
  * This prevents the autofill algorithm from attempting to assign a local publisher
  * to a slot that is already reserved for an external or visiting speaker.
@@ -402,6 +408,14 @@ const filterAssignmentKeysByPublicTalkType = (
     relevantAssignmentKeys = relevantAssignmentKeys.filter(
       (key) => !['WM_Speaker_Part1', 'WM_Speaker_Part2'].includes(key)
     );
+
+    // Visiting/host/group speakers give the closing prayer themselves;
+    // a recording has no attached speaker, so the prayer stays fillable
+    if (publicTalkType !== 'jwStreamRecording') {
+      relevantAssignmentKeys = relevantAssignmentKeys.filter(
+        (key) => key !== 'WM_ClosingPrayer'
+      );
+    }
   }
 
   return relevantAssignmentKeys;
@@ -820,10 +834,10 @@ export const getTasksArray = ({
 
       if (code) {
         const actualDate = getActualMeetingDate(
-          schedule.weekOf,
           settings,
-          dataView,
-          meeting_type
+          schedule,
+          meeting_type,
+          dataView
         );
 
         let requiresAssistant = false;
@@ -1077,11 +1091,12 @@ const checkSpeaker2Necessary = (
  *
  * Validation Checks:
  * 1. **Base Eligibility:** Checks if the person's UID is present in the `allowedUIDs` set.
- * 2. **Elder Status:** If `task.elderOnly` is true, ensures the person is an Elder.
- * 3. **Assistant Compatibility:** If a student is provided, validates if this person can assist them (e.g., gender rules) using `isValidAssistantForStudent`.
- * 4. **Self-Assignment:** Ensures the assistant is not the student themselves (specifically for `MM_AssistantOnly`).
- * 5. **Availability:** Checks if the person is blocked/away on the task date (`isPersonBlockedOnDate`).
- * 6. **Conflicts:** Verifies the person has no conflicting assignments in the same week (`hasAssignmentConflict`).
+ * 2. **Classroom Qualification:** Checks if the person is allowed to perform the task in the current classroom.
+ * 3. **Elder Status:** If `task.elderOnly` is true, ensures the person is an Elder.
+ * 4. **Assistant Compatibility:** If a student is provided, validates if this person can assist them (e.g., gender rules) using `isValidAssistantForStudent`.
+ * 5. **Self-Assignment:** Ensures the assistant is not the student themselves (specifically for `MM_AssistantOnly`).
+ * 6. **Availability:** Checks if the person is blocked/away on the task date (`isPersonBlockedOnDate`).
+ * 7. **Conflicts:** Verifies the person has no conflicting assignments in the same week (`hasAssignmentConflict`).
  *
  * @param person - The person object to evaluate.
  * @param task - The specific assignment task details.
@@ -1100,15 +1115,30 @@ const isCandidateValid = (
   // 1. Basic eligibility (Is the person generally allowed to perform this task?)
   if (!allowedUIDs?.has(person.person_uid)) return false;
 
-  // 2. Elder check
+  // 2. Classroom qualification (aux room restrictions for two-class setups).
+  // personAssignmentHasClassroom returns true when no restriction is
+  // configured, so this is a no-op unless the feature is used.
+  if (task.assignmentKey.endsWith('_A') || task.assignmentKey.endsWith('_B')) {
+    const classroom = task.assignmentKey.endsWith('_B') ? '2' : '1';
+    const personAssignments = person.person_data.assignments.find(
+      (a) => a.type === task.dataView
+    );
+
+    if (
+      !personAssignmentHasClassroom(personAssignments, task.code, classroom)
+    ) {
+      return false;
+    }
+  }
+  // 3. Elder check
   if (task.elderOnly && !personIsElder(person)) return false;
 
-  // 3. Assistant logic (Is the assistant compatible with the student?)
+  // 4. Assistant logic (Is the assistant compatible with the student?)
   if (studentPerson) {
     if (!isValidAssistantForStudent(studentPerson, person)) return false;
   }
 
-  // 4. Special case: MM_AssistantOnly (Assistant cannot be the student themselves)
+  // 5. Special case: MM_AssistantOnly (Assistant cannot be the student themselves)
   if (task.code === AssignmentCode.MM_AssistantOnly) {
     if (
       studentPerson?.person_uid &&
@@ -1118,10 +1148,10 @@ const isCandidateValid = (
     }
   }
 
-  // 5. Availability check (Vacation, away dates, etc.)
+  // 6. Availability check (Vacation, away dates, etc.)
   if (isPersonBlockedOnDate(person, task.targetDate)) return false;
 
-  // 6. Conflict check (Does the person already have another assignment?)
+  // 7. Conflict check (Does the person already have another assignment?)
   if (
     hasAssignmentConflict(
       person,
@@ -1442,6 +1472,7 @@ export const handleDynamicAssignmentAutofill = (
   const lang = store.get(JWLangState);
   const sourceLocale = store.get(JWLangLocaleState);
   const isPublicTalkCoordinator = store.get(isPublicTalkCoordinatorState);
+  const isWeekendEditor = store.get(isWeekendEditorState);
 
   // Skip autofill if the active language group has disabled this meeting type.
   // 'main' and groups without the flag (legacy data) stay active, mirroring
@@ -1480,7 +1511,8 @@ export const handleDynamicAssignmentAutofill = (
   // getting ignored, fixed and linked assignments from settings
   const checkAssignmentsSettingsResult = processAssignmentSettings(
     settings,
-    isPublicTalkCoordinator
+    isPublicTalkCoordinator,
+    isWeekendEditor
   );
   const fixedAssignmentsByCode = buildFixedAssignmentsByCode(
     checkAssignmentsSettingsResult.fixedAssignments
@@ -1704,6 +1736,21 @@ export const adjustTasksSortIndex = (
   });
 };
 
+type ProcessingTasksParams = {
+  tasks: AssignmentTask[];
+  checkAssignmentsSettingsResult: AssignmentSettingsResult;
+  fullHistory: AssignmentHistoryType[];
+  persons: PersonType[];
+  dataView: string;
+  eligibilityMapView: Map<AssignmentCode, Set<string>>;
+  personsMetrics: personsAssignmentMetrics;
+  weightingMetrics: personsWeightingMetrics;
+  assignmentsMetrics: AssignmentStatisticsComplete;
+  symposiumSpeakerUIDs: Set<string>;
+  sortStrategy?: 'default' | 'alternative';
+  targetCounts?: Map<string, number>;
+};
+
 /**
  * **Core Assignment Engine:** Fills tasks using **strategy-aware candidate selection**.
  *
@@ -1734,21 +1781,6 @@ export const adjustTasksSortIndex = (
  * @param targetCounts - (Round 2 only) `Map<personUID, maxAssignments>`
  * @returns `Map<personUID, assignmentsReceived>` for Round 2 quota planning
  */
-type ProcessingTasksParams = {
-  tasks: AssignmentTask[];
-  checkAssignmentsSettingsResult: AssignmentSettingsResult;
-  fullHistory: AssignmentHistoryType[];
-  persons: PersonType[];
-  dataView: string;
-  eligibilityMapView: Map<AssignmentCode, Set<string>>;
-  personsMetrics: personsAssignmentMetrics;
-  weightingMetrics: personsWeightingMetrics;
-  assignmentsMetrics: AssignmentStatisticsComplete;
-  symposiumSpeakerUIDs: Set<string>;
-  sortStrategy?: 'default' | 'alternative';
-  targetCounts?: Map<string, number>;
-};
-
 const processingTasks = ({
   tasks,
   checkAssignmentsSettingsResult,
@@ -1790,9 +1822,8 @@ const processingTasks = ({
     let finalCandidates = candidates;
     let currentSortStrategy = sortStrategy;
 
-    // NEU: Quoten-Check für die zweite Runde (alternative)
     if (targetCounts) {
-      const taskPrefix = task.assignmentKey.substring(0, 3); // "MM_" oder "WM_"
+      const taskPrefix = task.assignmentKey.substring(0, 3); // "MM_" or "WM_"
 
       finalCandidates = candidates.filter((p) => {
         // How many tasks has this person already received this week in this meeting?
