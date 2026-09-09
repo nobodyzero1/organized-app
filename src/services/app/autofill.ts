@@ -50,6 +50,7 @@ import {
 } from './sources';
 import { sourcesState } from '@states/sources';
 import { personsState } from '@states/persons';
+import { handleDownloadDebugCSV } from './assignments_schedule_export';
 
 const handleGetWeekType = (schedule: SchedWeekType) => {
   const dataView = store.get(userDataViewState);
@@ -394,8 +395,9 @@ const handleMMAssignCBSReader = (
   let assignPart = true;
 
   const mainWeekType =
-    schedule.midweek_meeting?.week_type?.find((record) => record.type === 'main')
-      ?.value || Week.NORMAL;
+    schedule.midweek_meeting?.week_type?.find(
+      (record) => record.type === 'main'
+    )?.value || Week.NORMAL;
 
   if (dataView !== 'main' && mainWeekType === Week.CO_VISIT) {
     assignPart = false;
@@ -437,9 +439,8 @@ const handleMMAssignPrayer = (
   let main = '';
   let selected: PersonType;
 
-  const prayer = (schedule.midweek_meeting?.[
-    `${type.toLowerCase()}_prayer`
-  ] ?? []) as AssignmentCongregation[];
+  const prayer = (schedule.midweek_meeting?.[`${type.toLowerCase()}_prayer`] ??
+    []) as AssignmentCongregation[];
 
   main = prayer.find((record) => record.type === dataView)?.value ?? '';
 
@@ -519,8 +520,9 @@ const handleMMAssignAYFStudent = (
   const weekType = handleGetWeekType(schedule);
 
   const languageWeekType =
-    schedule.midweek_meeting?.week_type?.find((record) => record.type !== 'main')
-      ?.value ?? Week.NORMAL;
+    schedule.midweek_meeting?.week_type?.find(
+      (record) => record.type !== 'main'
+    )?.value ?? Week.NORMAL;
 
   const assignAux =
     classCount === 2 &&
@@ -631,8 +633,9 @@ const handleMMAssignAYFAssistant = (
   const weekType = handleGetWeekType(schedule);
 
   const languageWeekType =
-    schedule.midweek_meeting?.week_type?.find((record) => record.type !== 'main')
-      ?.value ?? Week.NORMAL;
+    schedule.midweek_meeting?.week_type?.find(
+      (record) => record.type !== 'main'
+    )?.value ?? Week.NORMAL;
 
   const assignAux =
     classCount === 2 &&
@@ -1147,7 +1150,7 @@ export const schedulesStartAutofill = async (
     if (meeting === 'weekend') {
       await handleAutofillWeekend(weeksList);
     }
-
+    handleDownloadDebugCSV();
     return weeksList.length;
   } catch (error) {
     throw new Error(`autofill error: ${error.message}`);
