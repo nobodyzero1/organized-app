@@ -667,7 +667,7 @@ const isQualifiedForClassroom = (
  * @param assignmentsMetricsTotal - Global task frequency stats.
  * @param sortStrategy - `'default'` (broad) or `'alternative'` (quota-focused).
  *
- * @returns Sorted candidates (index 0 = best). Logs debug table to console.
+ * @returns Sorted candidates (index 0 = best).
  */
 export const sortCandidatesMultiLevel = (
   candidates: PersonType[],
@@ -854,6 +854,10 @@ export const sortCandidatesMultiLevel = (
     const metaFirst = metaCache.get(first.person_uid);
     const metaSecond = metaCache.get(second.person_uid);
 
+    // `weeksSinceLastRoom2` is only used to decide which of the top two
+    // candidates should go to Room 1 vs Room 2.
+    // Smaller value = was in Room 2 more recently -> prefer Room 1 now.
+    // Larger value = has not been in Room 2 for longer -> keep/prefer Room 2.
     if (
       metaFirst &&
       metaSecond &&
@@ -864,29 +868,6 @@ export const sortCandidatesMultiLevel = (
       [sortedResult[0], sortedResult[1]] = [sortedResult[1], sortedResult[0]];
     }
   }
-
-  // --- Debug logging ---
-  const taskName = AssignmentCode[task.code!];
-  console.groupCollapsed(
-    `[Sort ${sortStrategy}] ${taskName} (${task.schedule.weekOf}) - ${sortedResult.length} Candidates`
-  );
-
-  const tableData = sortedResult.map((p) => {
-    const m = metaCache.get(p.person_uid)!;
-    return {
-      Name: `${p.person_data.person_lastname.value}, ${p.person_data.person_firstname.value}`,
-      DataViewTier: m.dataViewTier,
-      MeetingTypeTier: m.assignmentsKindTier,
-      ExpectedPct: (m.targetPercentage * 100).toFixed(1) + '%',
-      ActualPct: (m.actualPercentage * 100).toFixed(1) + '%',
-      Gap: (m.percentageGap * 100).toFixed(1) + '%',
-      MeetingLoad: m.tasksInCurrentMeeting,
-      Room2Wait: m.weeksSinceLastRoom2,
-    };
-  });
-
-  console.table(tableData);
-  console.groupEnd();
 
   return sortedResult;
 };
