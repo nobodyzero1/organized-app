@@ -32,6 +32,7 @@ import {
   isPublicTalkCoordinatorState,
   assignmentsHistoryState,
   schedulesState,
+  isWeekendEditorState,
 } from '@states/schedules';
 import { settingsState } from '@states/settings';
 
@@ -405,7 +406,8 @@ export const downloadAnalysisCSV = (
   settings: SettingsType,
   history: AssignmentHistoryType[],
   assignmentsMetrics: AssignmentStatisticsComplete,
-  isPublicTalkCoordinator: boolean
+  isPublicTalkCoordinator: boolean,
+  isWeekendEditor: boolean
 ) => {
   const clonedPersons = structuredClone(persons);
   const clonedHistory = structuredClone(history);
@@ -413,7 +415,8 @@ export const downloadAnalysisCSV = (
 
   const assignmentsSettingsResult = processAssignmentSettings(
     settings,
-    isPublicTalkCoordinator
+    isPublicTalkCoordinator,
+    isWeekendEditor
   );
   const fixedAssignmentsByCode = buildFixedAssignmentsByCode(
     assignmentsSettingsResult.fixedAssignments
@@ -493,6 +496,7 @@ export const handleDownloadAnalysisCSV = () => {
   const history = store.get(assignmentsHistoryState);
   const isPublicTalkCoordinator = store.get(isPublicTalkCoordinatorState);
   const sourceLocale = store.get(JWLangLocaleState);
+  const isWeekendEditor = store.get(isWeekendEditorState);
 
   // 2. Base-Metriken berechnen (da diese für die CSV benötigt werden)
   const assignmentsMetrics = getAssignmentsWithStats(
@@ -513,6 +517,7 @@ export const handleDownloadAnalysisCSV = () => {
     settings,
     history,
     assignmentsMetrics,
-    isPublicTalkCoordinator
+    isPublicTalkCoordinator,
+    isWeekendEditor
   );
 };
